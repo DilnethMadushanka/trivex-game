@@ -2,6 +2,8 @@
 // Host-authoritative simulation. Online play uses PeerJS (WebRTC data channels):
 // the host's browser runs the match, friends send inputs and receive snapshots.
 import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import * as SkeletonUtils from 'three/addons/utils/SkeletonUtils.js';
 
 const $ = id => document.getElementById(id);
 const damp = THREE.MathUtils.damp, clamp = THREE.MathUtils.clamp;
@@ -335,12 +337,104 @@ const POSE = {
 };
 const POSE_KEYS = Object.keys(BASE);
 
+// ====================== IMPORTED 3D MODELS (optional) ======================
+// Put rigged GLB files in /models and list them in models/models.json:
+// { "characters": { "viru": "models/viru.glb", "hiri": "models/yaksha.glb" },
+//   "animations": ["models/animations.glb"] }
+// Clips are matched by name (idle, run, slash, punch, kick, arrow/bow, hit, dying, jump),
+// so Mixamo animations can be shared by every Mixamo-rigged character.
+const MODEL_CACHE = {};
+const CLIP_KEYS = {
+  idle: ['idle'], run: ['run', 'sprint'], walk: ['walk'], slash: ['slash', 'sword', 'swing', 'attack'], punch: ['punch', 'jab', 'cross'],
+  kick: ['kick'], bow: ['arrow', 'bow', 'draw', 'shoot'], hit: ['hit', 'react', 'impact'], die: ['dying', 'death', 'die'], jump: ['jump'],
+};
+function mapClips(clips) {
+  const map = {};
+  for (const [k, words] of Object.entries(CLIP_KEYS)) {
+    const c = clips.find(c => words.some(w => c.name.toLowerCase().includes(w)));
+    if (c) map[k] = c;
+  }
+  map.run = map.run || map.walk; map.idle = map.idle || clips[0];
+  map.punch = map.punch || map.slash; map.slash = map.slash || map.punch; map.kick = map.kick || map.punch;
+  map.bow = map.bow || map.punch;
+  return map;
+}
+function stripRootMotion(clip) {
+  // keep animations "in place": drop horizontal movement of the hips/root
+  for (const t of clip.tracks) {
+    if (t.name.endsWith('.position') && /hips|root|armature/i.test(t.name)) {
+      const v = t.values; for (let i = 0; i < v.length; i += 3) { v[i] = v[0]; v[i + 2] = v[2]; }
+    }
+  }
+  return clip;
+}
+async function loadModels() {
+  let manifest;
+  try { const r = await fetch('models/models.json', { cache: 'no-cache' }); if (!r.ok) return; manifest = await r.json(); } catch (e) { return; }
+  const loader = new GLTFLoader();
+  const sharedClips = [];
+  for (const url of manifest.animations || []) {
+    try { const g = await loader.loadAsync(url); g.animations.forEach(c => { c.name = c.name || url; sharedClips.push(stripRootMotion(c)); }); } catch (e) { console.warn('animation load failed', url, e); }
+  }
+  for (const [key, url] of Object.entries(manifest.characters || {})) {
+    try {
+      const g = await loader.loadAsync(url);
+      g.scene.updateMatrixWorld(true);
+      g.scene.traverse(o => { if (o.isSkinnedMesh) { o.skeleton.pose(); o.computeBoundingBox(); } });
+      g.scene.updateMatrixWorld(true);
+      const box = new THREE.Box3().setFromObject(g.scene, true);
+      console.info('model', key, 'height', (box.max.y - box.min.y).toFixed(3));
+      const height = box.max.y - box.min.y || 1;
+      const clips = [...g.animations.map(stripRootMotion), ...sharedClips];
+      MODEL_CACHE[key] = { scene: g.scene, scale: 1.8 / height, minY: box.min.y, map: mapClips(clips) };
+    } catch (e) { console.warn('model load failed', url, e); }
+  }
+  if (Object.keys(MODEL_CACHE).length) previewSkin();
+}
+class SkinnedModel {
+  constructor(key) {
+    const src = MODEL_CACHE[key];
+    this.root = new THREE.Group();
+    const m = SkeletonUtils.clone(src.scene);
+    m.scale.setScalar(src.scale); m.position.y = -src.minY * src.scale;
+    m.traverse(o => { if (o.isMesh) { o.castShadow = true; o.frustumCulled = false; } });
+    this.root.add(m);
+    this.mixer = new THREE.AnimationMixer(m);
+    this.actions = {};
+    for (const [k, clip] of Object.entries(src.map)) if (clip) this.actions[k] = this.mixer.clipAction(clip);
+    this.curName = null;
+    m.traverse(o => { if (o.isBone && /right.?hand$/i.test(o.name)) this.rHand = o; if (o.isBone && /left.?hand$/i.test(o.name)) this.lHand = o; });
+  }
+  play(name, { once = false, restart = false, speed = 1, fade = 0.15 } = {}) {
+    const a = this.actions[name] || this.actions.idle;
+    if (!a) return;
+    a.timeScale = speed;
+    if (this.curName === name && !restart) return;
+    const prev = this.actions[this.curName];
+    a.reset();
+    a.setLoop(once ? THREE.LoopOnce : THREE.LoopRepeat, Infinity);
+    a.clampWhenFinished = once;
+    a.enabled = true;
+    if (prev && prev !== a) a.crossFadeFrom(prev, fade, false); else a.fadeIn(fade);
+    a.play();
+    this.curName = name;
+  }
+  duration(name) { const a = this.actions[name] || this.actions.idle; return a ? a.getClip().duration : 1; }
+}
+const ATTACK_CLIP = { fist: 'punch', sword: 'slash', spear: 'slash', mace: 'slash', bow: 'bow' };
+
 // ====================== PLAYER VIEW ======================
 class View {
   constructor(p) {
     this.def = SKINS[p.skin] || SKINS.viru;
     this.parts = buildBody(this.def);
     scene.add(this.parts.rig);
+    if (MODEL_CACHE[p.skin]) {
+      this.model = new SkinnedModel(p.skin);
+      this.parts.body.visible = false;
+      this.parts.rig.add(this.model.root);
+      this.holder = new THREE.Group(); scene.add(this.holder);
+    }
     this.cur = { ...POSE.idle };
     this.weapon = null; this.weaponType = null;
     this.walk = 0; this.phase = 0; this.atkT = 9; this.atkSeen = p.atk || 0; this.hitT = 0;
@@ -353,7 +447,7 @@ class View {
     this.tag.scale.set(1.6, 0.3, 1);
     scene.add(this.tag);
   }
-  dispose() { scene.remove(this.parts.rig); scene.remove(this.tag); }
+  dispose() { scene.remove(this.parts.rig); scene.remove(this.tag); if (this.holder) scene.remove(this.holder); }
   setWeapon(type) {
     if (type === this.weaponType) return;
     this.weaponType = type;
@@ -361,7 +455,8 @@ class View {
     this.weapon = null;
     if (type && type !== 'fist') {
       this.weapon = weaponMesh(type);
-      this.parts.handG[type === 'bow' ? 0 : 1].add(this.weapon);
+      if (this.model) this.holder.add(this.weapon);
+      else this.parts.handG[type === 'bow' ? 0 : 1].add(this.weapon);
     }
   }
   update(p, dt, isLocal) {
@@ -389,12 +484,39 @@ class View {
     const moving = p.alive && p.mv === 1;
     this.walk = damp(this.walk, moving ? 1 : 0, 10, dt);
     this.phase += dt * (p.sp ? 13 : 10);
-    this.apply();
+    if (this.model) this.animateModel(p, W, dt); else this.apply();
     const pr = this.parts.rig;
     pr.position.set(this.x, this.y, this.z);
     pr.rotation.y = this.yaw;
+    if (this.model) this.attachWeapon(p);
     this.tag.position.set(this.x, this.y + 2.35 * this.def.scale, this.z);
     this.tag.visible = p.alive && !isLocal;
+  }
+  animateModel(p, W, dt) {
+    const m = this.model;
+    if (!p.alive) m.play('die', { once: true, fade: 0.2 });
+    else if (this.atkT < W.cd * 0.9) {
+      const clip = ATTACK_CLIP[p.w || 'fist'];
+      const restart = this.atkT === 0 || this._atkFor !== this.atkSeen;
+      this._atkFor = this.atkSeen;
+      m.play(clip, { once: true, restart, speed: m.duration(clip) / (W.cd * 0.9), fade: 0.08 });
+    } else if (this.hitT > 0.1) m.play('hit', { once: true, fade: 0.08 });
+    else if (p.mv === 2) m.play('jump', { fade: 0.2 });
+    else if (p.mv === 1) m.play('run', { speed: p.sp ? 1.25 : 0.95 });
+    else m.play('idle', { fade: 0.25 });
+    m.mixer.update(dt);
+  }
+  attachWeapon(p) {
+    const bone = p.w === 'bow' ? this.model.lHand : this.model.rHand;
+    if (!bone || !this.weapon) return;
+    this.parts.rig.updateMatrixWorld(true);
+    bone.getWorldPosition(this.holder.position);
+    bone.getWorldQuaternion(this.holder.quaternion);
+    this.holder.scale.setScalar(this.def.scale);
+    // Mixamo hands: +Y runs along the fingers. Turn the weapon so its grip sits in the fist.
+    this.weapon.position.set(0, 0.08, 0.02);
+    this.weapon.rotation.set(p.w === 'bow' ? 0 : -Math.PI / 2, 0, p.w === 'spear' ? 0 : 0);
+    if (p.w === 'bow') this.weapon.rotation.set(0, 0, Math.PI / 2);
   }
   apply() {
     const c = this.cur, p = this.parts, w = this.walk, ph = this.phase;
@@ -1075,6 +1197,7 @@ function previewSkin() {
   const v = new View(p); views.set(-1, v); S.preview = p;
 }
 previewSkin();
+loadModels();
 
 function frame() {
   requestAnimationFrame(frame);
