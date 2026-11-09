@@ -376,11 +376,14 @@ async function loadModels() {
   const loader = new GLTFLoader();
   const sharedClips = [];
   for (const url of manifest.animations || []) {
-    try { const g = await loader.loadAsync(url); g.animations.forEach(c => { c.name = c.name || url; sharedClips.push(stripRootMotion(c)); }); } catch (e) { console.warn('animation load failed', url, e); }
+    // Mixamo names every clip "mixamo.com", so fall back to the file name (models/anim/run.glb -> run)
+    try { const g = await loader.loadAsync(url); g.animations.forEach(c => { if (!c.name || c.name === 'mixamo.com') c.name = url.split('/').pop().replace(/\.glb$/i, ''); sharedClips.push(stripRootMotion(c)); }); } catch (e) { console.warn('animation load failed', url, e); }
   }
+  const files = {};
   for (const [key, url] of Object.entries(manifest.characters || {})) {
     try {
-      const g = await loader.loadAsync(url);
+      const g = await (files[url] = files[url] || loader.loadAsync(url));
+      g.animations.forEach(c => { if (!c.name || c.name === 'mixamo.com') c.name = 'idle'; });
       g.scene.updateMatrixWorld(true);
       g.scene.traverse(o => { if (o.isSkinnedMesh) { o.skeleton.pose(); o.computeBoundingBox(); } });
       g.scene.updateMatrixWorld(true);
@@ -388,7 +391,7 @@ async function loadModels() {
       console.info('model', key, 'height', (box.max.y - box.min.y).toFixed(3));
       const height = box.max.y - box.min.y || 1;
       const clips = [...g.animations.map(stripRootMotion), ...sharedClips];
-      MODEL_CACHE[key] = { scene: g.scene, scale: 1.8 / height, minY: box.min.y, map: mapClips(clips) };
+      MODEL_CACHE[key] = { scene: g.scene, scale: 1.8 / height, minY: box.min.y, map: mapClips(clips), tint: (manifest.tints || {})[key] };
     } catch (e) { console.warn('model load failed', url, e); }
   }
   if (Object.keys(MODEL_CACHE).length) previewSkin();
@@ -399,7 +402,12 @@ class SkinnedModel {
     this.root = new THREE.Group();
     const m = SkeletonUtils.clone(src.scene);
     m.scale.setScalar(src.scale); m.position.y = -src.minY * src.scale;
-    m.traverse(o => { if (o.isMesh) { o.castShadow = true; o.frustumCulled = false; } });
+    const tint = src.tint ? new THREE.Color(src.tint) : null;
+    m.traverse(o => {
+      if (!o.isMesh) return;
+      o.castShadow = true; o.frustumCulled = false;
+      if (tint) { o.material = o.material.clone(); o.material.color.lerp(tint, 0.5); }
+    });
     this.root.add(m);
     this.mixer = new THREE.AnimationMixer(m);
     this.actions = {};
@@ -1354,4 +1362,4 @@ function frame() {
   renderer.render(scene, camera);
 }
 frame();
-window.__S = S; window.__H = H_; window.__step = hostStep;
+window.__S = S; window.__H = H_; window.__step = hostStep; window.__views = views;
