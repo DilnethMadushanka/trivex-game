@@ -40,10 +40,26 @@
   kbd { display:inline-block; min-width:16px; text-align:center; border:1px solid #3fbf8f88; border-radius:3px; padding:1px 6px; background:#0b0705aa; color:var(--fg); font-family:Inter; font-size:12px; }
 
   #hud { position:fixed; inset:0; pointer-events:none; }
-  #cross { position:absolute; left:50%; top:50%; width:22px; height:22px; margin:-11px 0 0 -11px; }
-  #cross:before, #cross:after { content:''; position:absolute; background:#fff; opacity:.85; box-shadow:0 0 3px #000; }
-  #cross:before { left:10px; top:2px; width:2px; height:18px; } #cross:after { top:10px; left:2px; height:2px; width:18px; }
-  #cross.hitm:before, #cross.hitm:after { background:#ff5a3a; }
+  #cross { position:absolute; left:50%; top:50%; width:22px; height:22px; margin:-11px 0 0 -11px; --xc:#fff; }
+  #cross svg, #xhPreview svg, .xh svg { width:100%; height:100%; display:block; overflow:visible; }
+  #cross path, #cross circle, #xhPreview path, #xhPreview circle, .xh path, .xh circle { fill:none; stroke:var(--xc,#f3e6c8); stroke-width:2.2; stroke-linecap:round; filter:drop-shadow(0 0 1.5px #000); }
+  #cross .f, #xhPreview .f, .xh .f { fill:var(--xc,#f3e6c8); }
+  #cross.hitm { --xc:#ff3a2a !important; transform:scale(1.25); }
+  #cross { transition:transform .08s; }
+  .xh { width:38px; height:38px; padding:8px; border-radius:6px; border:1px solid #e0b45e44; background:#0b0705; cursor:pointer; box-sizing:border-box; }
+  .xh.sel { border-color:var(--gold); background:#3a240f; }
+  .xc { width:24px; height:24px; border-radius:50%; border:2px solid #0b0705; cursor:pointer; padding:0; }
+  .xc.sel { outline:2px solid var(--gold); outline-offset:2px; }
+  #xhPreviewBox { width:56px; height:56px; display:flex; align-items:center; justify-content:center; background:#3a5a3a; border-radius:8px; border:1px solid #e0b45e44; }
+  input[type=range] { width:140px; padding:0; accent-color:var(--gold); }
+  .dnum { position:absolute; left:0; top:0; font-family:Cinzel, serif; font-weight:800; font-size:22px; color:#fff2cf; text-shadow:0 2px 0 #3a1408, 0 0 8px #000; pointer-events:none; white-space:nowrap; }
+  .dnum.big { color:#ffb030; font-size:30px; }
+  .dnum.arm { color:#8ac4ff; }
+  .dnum.me { color:#ff5a3a; font-size:18px; }
+  #hptr { background:#fff6; transition:width .6s .25s; }
+  body.lowhp #hpf { animation:pulse .7s infinite alternate; }
+  body.lowhp #dmg { opacity:.35 !important; animation:pulse .9s infinite alternate; }
+  @keyframes pulse { to { filter:brightness(1.6); } }
   .bars { position:absolute; bottom:22px; left:50%; transform:translateX(-50%); width:min(420px,60vw); }
   .bar { height:12px; background:#0b0705cc; border:1px solid #ffffff33; margin-top:6px; position:relative; overflow:hidden; border-radius:3px; }
   .bar > div { position:absolute; inset:0; transition:width .15s; }
@@ -122,6 +138,11 @@
     <div class="skins" id="skins" style="margin-top:12px"></div>
   </div>
   <div class="panel">
+    <div class="label">Crosshair</div>
+    <div class="row" style="margin-top:0"><div id="xhPreviewBox"><div id="xhPreview"></div></div><div class="skins" id="xhStyles"></div></div>
+    <div class="row"><div class="skins" id="xhColors"></div><label style="font-size:12px;color:var(--dim)">Size <input type="range" id="xhSize" min="12" max="48" step="2"></label></div>
+  </div>
+  <div class="panel">
     <div class="row" style="margin-top:0">
       <button class="btn" id="bSolo">Play vs Bots</button>
       <button class="btn ghost" id="bHost">Host Online Room</button>
@@ -168,7 +189,7 @@
     <div class="lbl"><span>ARMOR</span><span id="arT">0</span></div>
     <div class="bar"><div id="arf" style="width:0"></div></div>
     <div class="lbl" style="margin-top:6px"><span>HEALTH</span><span id="hpT">100</span></div>
-    <div class="bar"><div id="hpf"></div></div>
+    <div class="bar"><div id="hptr"></div><div id="hpf"></div></div>
   </div>
   <div id="slots"><div class="slot on" id="s0"><b>1</b><span>Fists</span></div><div class="slot" id="s1"><b>2</b><span>Fists</span></div></div>
 </div>
