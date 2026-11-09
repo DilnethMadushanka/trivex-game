@@ -38,7 +38,9 @@ const BOT_NAMES = ['Dutugemunu', 'Kirisanda', 'Nandimitra', 'Suranimala', 'Mahas
 // ====================== RENDERER ======================
 const canvas = $('gl');
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
-renderer.setPixelRatio(Math.min(devicePixelRatio, 1.75));
+const IS_TOUCH = matchMedia('(pointer: coarse)').matches || ('ontouchstart' in window && navigator.maxTouchPoints > 0);
+if (IS_TOUCH) document.body.classList.add('touch');
+renderer.setPixelRatio(Math.min(devicePixelRatio, IS_TOUCH ? 1.25 : 1.75));
 renderer.setSize(innerWidth, innerHeight);
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
@@ -52,7 +54,7 @@ camera.position.set(0, 40, 80);
 scene.add(new THREE.HemisphereLight(0xffe0b8, 0x4a3018, 1.1));
 const sun = new THREE.DirectionalLight(0xffd8a0, 2.4);
 sun.castShadow = true;
-sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.mapSize.set(IS_TOUCH ? 1024 : 2048, IS_TOUCH ? 1024 : 2048);
 Object.assign(sun.shadow.camera, { left: -30, right: 30, top: 30, bottom: -30, near: 1, far: 120 });
 sun.shadow.bias = -0.0008;
 scene.add(sun, sun.target);
@@ -1063,6 +1065,7 @@ function toMenu() {
 function showScreen(id) {
   for (const s of ['menu', 'lobby', 'over']) $(s).classList.toggle('hidden', s !== id);
   $('hud').classList.toggle('hidden', id !== null);
+  document.body.classList.toggle('playing', id === null);
 }
 function showErr(t) { $('err').textContent = t; }
 function renderLobby() {
@@ -1141,11 +1144,67 @@ addEventListener('mousemove', e => {
 });
 canvas.addEventListener('contextmenu', e => e.preventDefault());
 
+// ---------- touch controls (phones / tablets) ----------
+// Left thumb: virtual joystick. Right thumb: drag anywhere to look. Buttons: attack, jump, pick up, swap, sprint.
+const touch = { jx: 0, jz: 0, joyId: null, lookId: null, lx: 0, ly: 0, atk: false, sprint: false };
+function setupTouch() {
+  const joy = $('joy'), knob = $('joyKnob'), look = $('lookZone');
+  const R = 55;
+  let cx = 0, cy = 0;
+  const moveKnob = (x, y) => {
+    let dx = x - cx, dy = y - cy; const d = Math.hypot(dx, dy);
+    if (d > R) { dx *= R / d; dy *= R / d; }
+    knob.style.transform = `translate(${dx}px, ${dy}px)`;
+    touch.jx = dx / R; touch.jz = -dy / R;
+  };
+  $('joyZone').addEventListener('pointerdown', e => {
+    if (touch.joyId !== null) return;
+    touch.joyId = e.pointerId; e.target.setPointerCapture?.(e.pointerId);
+    cx = e.clientX; cy = e.clientY;
+    joy.style.left = (cx - 70) + 'px'; joy.style.top = (cy - 70) + 'px'; joy.classList.add('on');
+    moveKnob(cx, cy);
+  });
+  addEventListener('pointermove', e => {
+    if (e.pointerId === touch.joyId) moveKnob(e.clientX, e.clientY);
+    if (e.pointerId === touch.lookId) {
+      camYaw -= (e.clientX - touch.lx) * 0.0065;
+      camPitch = clamp(camPitch + (e.clientY - touch.ly) * 0.005, -0.9, 1.1);
+      touch.lx = e.clientX; touch.ly = e.clientY;
+    }
+  });
+  const end = e => {
+    if (e.pointerId === touch.joyId) { touch.joyId = null; touch.jx = touch.jz = 0; knob.style.transform = ''; joy.classList.remove('on'); }
+    if (e.pointerId === touch.lookId) touch.lookId = null;
+  };
+  addEventListener('pointerup', end); addEventListener('pointercancel', end);
+  look.addEventListener('pointerdown', e => { if (touch.lookId !== null) return; touch.lookId = e.pointerId; touch.lx = e.clientX; touch.ly = e.clientY; });
+  const hold = (id, on, off) => {
+    const el = $(id);
+    el.addEventListener('pointerdown', e => { e.preventDefault(); e.stopPropagation(); el.classList.add('down'); on(); });
+    const up = () => { el.classList.remove('down'); off && off(); };
+    el.addEventListener('pointerup', up); el.addEventListener('pointercancel', up); el.addEventListener('pointerleave', up);
+  };
+  hold('tAtk', () => { touch.atk = true; touch.atkUntil = performance.now() + 160; }, () => { touch.atk = false; });
+  hold('tJump', () => { edge.jump = true; });
+  hold('tPick', () => { edge.pick = true; });
+  hold('tSwap', () => { edge.swap = true; });
+  hold('tRun', () => { touch.sprint = !touch.sprint; $('tRun').classList.toggle('lit', touch.sprint); });
+  $('tFull').addEventListener('click', () => {
+    const d = document.documentElement;
+    if (!document.fullscreenElement) d.requestFullscreen?.().then(() => screen.orientation?.lock?.('landscape').catch(() => {})).catch(() => {});
+    else document.exitFullscreen?.();
+  });
+  document.addEventListener('touchmove', e => { if (S.phase === 'play') e.preventDefault(); }, { passive: false });
+}
+if (IS_TOUCH) setupTouch();
+
 function gatherInput() {
+  const tmag = Math.hypot(touch.jx, touch.jz);
   return {
-    mx: (keys.KeyD ? 1 : 0) - (keys.KeyA ? 1 : 0),
-    mz: (keys.KeyW ? 1 : 0) - (keys.KeyS ? 1 : 0),
-    yaw: camYaw, pitch: camPitch - 0.25, atk: mouseDown, sprint: !!(keys.ShiftLeft || keys.ShiftRight),
+    mx: clamp((keys.KeyD ? 1 : 0) - (keys.KeyA ? 1 : 0) + (tmag > 0.2 ? touch.jx : 0), -1, 1),
+    mz: clamp((keys.KeyW ? 1 : 0) - (keys.KeyS ? 1 : 0) + (tmag > 0.2 ? touch.jz : 0), -1, 1),
+    yaw: camYaw, pitch: camPitch - 0.25, atk: mouseDown || touch.atk || performance.now() < (touch.atkUntil || 0),
+    sprint: !!(keys.ShiftLeft || keys.ShiftRight) || touch.sprint || tmag > 0.95,
   };
 }
 
@@ -1166,7 +1225,7 @@ function drawHUD() {
   let best = null, bd = 2.4;
   if (p.alive) for (const l of S.loot) { const d = Math.hypot(l.x - p.x, l.z - p.z); if (d < bd) { bd = d; best = l; } }
   const pr = $('prompt');
-  if (best) { pr.classList.remove('hidden'); pr.innerHTML = `<kbd>E</kbd> Pick up ${esc((WEAPONS[best.type] || ITEMS[best.type]).name)}`; } else pr.classList.add('hidden');
+  if (best) { pr.classList.remove('hidden'); pr.innerHTML = `${IS_TOUCH ? '✋' : '<kbd>E</kbd>'} Pick up ${esc((WEAPONS[best.type] || ITEMS[best.type]).name)}`; } else pr.classList.add('hidden');
   // minimap
   const s = 170, k = s / (ISLAND_R * 2 + 10);
   mm.clearRect(0, 0, s, s);
