@@ -164,6 +164,10 @@
       <button class="btn ghost" id="bHost">Host Online Room</button>
     </div>
     <div class="row">
+      <button class="btn ghost" id="bDuel">1 vs 1 Room</button>
+      <button class="btn ghost" id="bDuelBot">1 vs 1 vs Bot</button>
+    </div>
+    <div class="row">
       <input id="code" maxlength="5" placeholder="ROOM CODE" style="text-transform:uppercase;width:150px">
       <button class="btn ghost" id="bJoin">Join Room</button>
     </div>
@@ -178,7 +182,7 @@
 </div>
 
 <div id="lobby" class="screen hidden">
-  <div class="kicker">Online Room</div>
+  <div class="kicker" id="lobbyKicker">Online Room</div>
   <div class="panel">
     <div class="label">Room code — share with friends</div>
     <div class="code" id="roomCode">-----</div>

@@ -789,7 +789,10 @@ function sfx(k, x, z) {
 // ====================== GAME STATE ======================
 // Shared state shape (both host & client keep `S`):
 // S.players: Map id -> {id,name,skin,x,y,z,yaw,pitch,hp,ar,alive,w,slots,cur,atk,mv,sp,kills,place}
-const S = { players: new Map(), loot: [], arrows: [], zone: { x: 0, z: 0, r: ISLAND_R + 10 }, zoneText: '', alive: 0, phase: 'menu', myId: null };
+const S = { players: new Map(), loot: [], arrows: [], zone: { x: 0, z: 0, r: ISLAND_R + 10 }, zoneText: '', alive: 0, phase: 'menu', myId: null, mode: 'br' };
+// 1 vs 1 duel: a ring around the stupa, first to win 2 rounds takes the match
+const DUEL = { r: 16, minR: 9.5, roundTime: 40, closeTime: 15, dps: 8, win: 2, spawn: [[5.5, 11.5], [-5.5, 11.5]] };
+const maxPlayers = () => S.mode === 'duel' ? 2 : MAX_PLAYERS;
 const views = new Map();
 const me = () => S.players.get(S.myId);
 let isHost = false;
@@ -800,6 +803,8 @@ function hostReset(seed) {
   H_.lootId = 1; H_.lootDirty = true; H_.events = []; H_.pending = []; H_.ended = false;
   S.loot = []; S.arrows = [];
   buildWorld(seed);
+  if (S.mode === 'duel') { H_.duel = { round: 1, score: {}, wait: 0 }; duelRound(); return; }
+  H_.duel = null;
   const lr = mulberry(seed * 7 + 3);
   const pickLoot = () => { let t = lr() * 100; for (const [k, w] of LOOT_TABLE) { if ((t -= w) < 0) return k; } return 'sword'; };
   for (let i = 0; i < 90; i++) {
@@ -821,6 +826,29 @@ function hostReset(seed) {
     Object.assign(p, { x: o.x, z: o.z, y: H(o.x, o.z), vy: 0, yaw: a + Math.PI, pitch: 0, hp: 100, ar: 0, alive: true, slots: ['fist', 'fist'], cur: 0, w: 'fist', atk: 0, cd: 0, mv: 0, sp: 0, kills: 0, place: 0, st: 100, blk: 0, rollT: 0, rolls: 0, combo: 0, lastAtk: -9, guardT: 0, inp: p.inp || blankInput() });
   });
 }
+function freshFighter(p, x, z, yaw, slots) {
+  Object.assign(p, { x, z, y: H(x, z), vy: 0, yaw, pitch: 0, hp: 100, ar: 0, alive: true, slots, cur: 0, w: slots[0], atk: p.atk || 0, cd: 0, mv: 0, sp: 0, place: 0, st: 100, blk: 0, rollT: 0, rolls: p.rolls || 0, combo: 0, lastAtk: -9, guardT: 0, inp: p.inp || blankInput() });
+  p.inp.yaw = yaw;
+}
+// start (or restart) a duel round: same arena, fresh health, fresh weapon rack
+function duelRound() {
+  H_.pending = []; S.arrows = [];
+  S.loot = [];
+  [['mace', 0, 13], ['machete', 13, 0], ['bow', -13, 0], ['herb', 0, -12], ['armor', 9, -9], ['herb', -9, -9]].forEach(([type, x, z]) => S.loot.push({ id: H_.lootId++, type, x, z }));
+  H_.lootDirty = true;
+  H_.zone = { duel: true, x: 0, z: 0, r: DUEL.r, t: DUEL.roundTime, shrinking: false, dps: DUEL.dps };
+  S.zone = { x: 0, z: 0, r: DUEL.r };
+  const list = [...S.players.values()].filter(p => !p.left);
+  list.forEach((p, i) => {
+    const [x, z] = DUEL.spawn[i % 2];
+    freshFighter(p, x, z, x > 0 ? -Math.PI / 2 : Math.PI / 2, ['sword', 'spear']);
+  });
+  for (const p of S.players.values()) if (p.left) { p.alive = false; p.hp = 0; }
+}
+function duelScoreText() {
+  const d = H_.duel; if (!d) return '';
+  return [...S.players.values()].filter(p => !p.left).map(p => `${p.name} ${d.score[p.id] || 0}`).join('  –  ');
+}
 function blankInput() { return { mx: 0, mz: 0, yaw: 0, pitch: 0, atk: false, jump: false, pick: false, slot: -1, swap: false, sprint: false, block: false, roll: false }; }
 // ---- block / dodge roll / stamina tuning ----
 const ROLL = { time: 0.42, speed: 10.5, cost: 30, iframes: 0.34 };
@@ -838,7 +866,13 @@ function feed(text) { H_.events.push(['feed', text]); showFeed(text); }
 function hostStep(dt) {
   if (S.phase !== 'play' || H_.ended) return;
   const z = H_.zone;
-  // zone timing
+  if (z.duel) {
+    z.t -= dt;
+    if (!z.shrinking && z.t <= 0) { z.shrinking = true; z.t = DUEL.closeTime; }
+    if (z.shrinking) z.r = Math.max(DUEL.minR, DUEL.minR + (DUEL.r - DUEL.minR) * Math.max(0, z.t) / DUEL.closeTime);
+    S.zone = { x: 0, z: 0, r: z.r };
+    S.zoneText = `Round ${H_.duel.round} · ${duelScoreText()} · ` + (z.shrinking ? 'Ring closing!' : `Ring closes in ${Math.ceil(z.t)}s`);
+  } else {
   z.t -= dt;
   if (z.t <= 0) {
     if (!z.shrinking) {
@@ -853,6 +887,7 @@ function hostStep(dt) {
   if (z.shrinking) { const k = 1 - z.t / 22; z.x = z.fromX + (z.toX - z.fromX) * k; z.z = z.fromZ + (z.toZ - z.fromZ) * k; z.r = z.fromR + (z.toR - z.fromR) * k; }
   S.zone = { x: z.x, z: z.z, r: z.r };
   S.zoneText = z.shrinking ? `Zone closing! ${Math.ceil(z.t)}s` : (z.stage >= 6 ? 'Final circle' : `Zone shrinks in ${Math.ceil(z.t)}s`);
+  }
 
   H_.time = (H_.time || 0) + dt;
   for (const p of S.players.values()) {
@@ -938,6 +973,7 @@ function hostStep(dt) {
   // end check
   const alive = [...S.players.values()].filter(p => p.alive);
   S.alive = alive.length;
+  if (H_.duel && duelCheck(alive, dt)) return;
   if (!H_.ended && alive.length <= 1 && S.players.size > 1) {
     H_.ended = true;
     const w = alive[0];
@@ -1076,7 +1112,35 @@ const PREFIX = 'ranabhumi-v1-';
 function genCode() { const a = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; return Array.from({ length: 5 }, () => a[Math.floor(Math.random() * a.length)]).join(''); }
 function netAvailable() { return typeof window.Peer === 'function'; }
 
-function hostRoom() {
+// returns true while the duel goes on; false lets the normal "last one standing" ending run
+function duelCheck(alive, dt) {
+  const d = H_.duel;
+  if ([...S.players.values()].some(p => p.left)) return false;   // opponent left: the one still here wins
+  if (d.wait > 0) {
+    d.wait -= dt;
+    if (d.wait <= 0) { d.round++; duelRound(); H_.events.push(['rs', d.round]); onRoundStart(d.round); }
+    return true;
+  }
+  if (alive.length > 1) return true;
+  const w = alive[0];
+  if (w) d.score[w.id] = (d.score[w.id] || 0) + 1;
+  if (w && d.score[w.id] >= DUEL.win) { S.zoneText = duelScoreText(); return false; }
+  d.wait = 3.5;
+  const ev = ['round', d.round, w ? w.id : 0, w ? w.name : '', duelScoreText()];
+  H_.events.push(ev); onRoundEnd(ev);
+  return true;
+}
+function onRoundEnd(e) {
+  const [, n, wid, wname, score] = e;
+  sfx(wid === S.myId ? 'win' : 'gong');
+  centerMsg(wid === S.myId ? `You win round ${n}` : (wname ? `${wname} wins round ${n}` : `Round ${n} draw`), score, 3.2);
+}
+function onRoundStart(n) {
+  sfx('gong'); centerMsg(`ROUND ${n}`, 'Fight!', 1.8);
+  setTimeout(() => { const p = me(); if (p) { camYaw = p.yaw; camPitch = 0.25; } }, 150);
+}
+function hostRoom(mode = S.mode) {
+  S.mode = mode;
   if (!netAvailable()) return showErr('Online library failed to load. Check your internet connection.');
   const code = genCode();
   NET.code = code;
@@ -1089,7 +1153,7 @@ function hostRoom() {
   S.myId = meP.id;
   S.phase = 'lobby';
   peer.on('open', () => { $('roomCode').textContent = code; showScreen('lobby'); renderLobby(); });
-  peer.on('error', e => { if (e.type === 'unavailable-id') { peer.destroy(); hostRoom(); } else if (e.type !== 'network' && e.type !== 'disconnected') { showErr('Network error: ' + e.type); $('lobbyErr').textContent = 'Network: ' + e.type; } });
+  peer.on('error', e => { if (e.type === 'unavailable-id') { peer.destroy(); hostRoom(mode); } else if (e.type !== 'network' && e.type !== 'disconnected') { showErr('Network error: ' + e.type); $('lobbyErr').textContent = 'Network: ' + e.type; } });
   // Phones drop the connection to the room server when the browser goes to the background
   // (e.g. while sharing the code on WhatsApp). Friends then get "room not found", so reconnect.
   peer.on('disconnected', () => {
@@ -1103,11 +1167,11 @@ function hostRoom() {
     conn.on('close', () => {
       const p = conn.playerId && S.players.get(conn.playerId);
       NET.conns.delete(conn.peer);
-      if (p) { if (S.phase === 'lobby') S.players.delete(p.id); else if (p.alive) { p.alive = false; p.hp = 0; feed(`${esc(p.name)} left the island`); } }
+      if (p) { if (S.phase === 'lobby') S.players.delete(p.id); else { if (S.mode === 'duel') p.left = true; if (p.alive) { p.alive = false; p.hp = 0; feed(`${esc(p.name)} left the island`); } } }
       renderLobby(); broadcastLobby();
     });
   });
-  $('bStart').disabled = false; $('lobbyNote').textContent = 'Bots fill the island up to 12 warriors. Keep this page open while friends join.';
+  $('bStart').disabled = false; setLobbyText();
 }
 document.addEventListener('visibilitychange', () => {
   const peer = NET.peer;
@@ -1116,11 +1180,11 @@ document.addEventListener('visibilitychange', () => {
 function onHostMsg(conn, m) {
   if (!m || typeof m !== 'object') return;
   if (m.t === 'join') {
-    if (S.phase !== 'lobby' || S.players.size >= MAX_PLAYERS) { conn.send({ t: 'full' }); return; }
+    if (S.phase !== 'lobby' || S.players.size >= maxPlayers()) { conn.send({ t: 'full' }); return; }
     const p = addPlayer(String(m.name || 'Warrior').slice(0, 14), m.skin);
     conn.playerId = p.id;
     NET.conns.set(conn.peer, conn);
-    conn.send({ t: 'welcome', id: p.id });
+    conn.send({ t: 'welcome', id: p.id, mode: S.mode });
     renderLobby(); broadcastLobby();
   } else if (m.t === 'in') {
     const p = S.players.get(conn.playerId); if (!p) return;
@@ -1169,9 +1233,9 @@ function joinRoom(code, attempt = 1) {
 }
 function onClientMsg(m) {
   if (m.t === 'full') { showErr('That room is full or already playing.'); return; }
-  if (m.t === 'welcome') { S.myId = m.id; S.phase = 'lobby'; $('roomCode').textContent = $('code').value.toUpperCase(); showScreen('lobby'); $('bStart').disabled = true; $('lobbyNote').textContent = 'Waiting for the host to start…'; }
+  if (m.t === 'welcome') { S.myId = m.id; S.phase = 'lobby'; S.mode = m.mode === 'duel' ? 'duel' : 'br'; setLobbyText(); $('roomCode').textContent = $('code').value.toUpperCase(); showScreen('lobby'); $('bStart').disabled = true; $('lobbyNote').textContent = 'Waiting for the host to start…'; }
   if (m.t === 'lobby') { S.lobby = m.players; renderLobby(); }
-  if (m.t === 'start') { startMatchView(m.seed); }
+  if (m.t === 'start') { S.mode = m.mode === 'duel' ? 'duel' : 'br'; startMatchView(m.seed); }
   if (m.t === 's') applySnapshot(m);
   if (m.t === 'loot') { S.loot = m.l.map(a => ({ id: a[0], type: a[1], x: a[2], z: a[3] })); syncLootViews(S.loot); }
 }
@@ -1200,6 +1264,8 @@ function handleEvent(e) {
   else if (e[0] === 'feed') showFeed(e[1]);
   else if (e[0] === 'kill') fxKill(e[1], e[2], e[3], e[4]);
   else if (e[0] === 'end') onEnd(e[1], e[2]);
+  else if (e[0] === 'round') onRoundEnd(e);
+  else if (e[0] === 'rs') onRoundStart(e[1]);
   else if (e[0] === 'sw') {}
   else if (e[0] === 'dodge') fxDodge(e[1], e[2], e[3], e[4], e[5]);
   else if (e[0] === 'cb' && e[1] === S.myId) showCombo();
@@ -1219,8 +1285,9 @@ function makeSnapshot() {
 // ====================== MATCH FLOW ======================
 let mySkin = 'viru';
 function myName() { const n = $('name').value.trim(); return n || 'Warrior' + Math.floor(Math.random() * 90 + 10); }
-function startSolo() {
+function startSolo(mode = 'br') {
   initAudio();
+  S.mode = mode;
   isHost = true; NET.conns.clear();
   S.players.clear(); H_.nextId = 1;
   S.myId = addPlayer(myName(), mySkin).id;
@@ -1231,7 +1298,7 @@ function hostStart() {
   // fill with bots
   const used = new Set([...S.players.values()].map(p => p.name));
   let bi = 0;
-  while (S.players.size < MAX_PLAYERS) {
+  while (S.players.size < maxPlayers()) {
     let n = BOT_NAMES[bi++ % BOT_NAMES.length]; while (used.has(n)) n = BOT_NAMES[bi++ % BOT_NAMES.length] + ' ' + bi;
     used.add(n);
     addPlayer(n, SKIN_KEYS[Math.floor(Math.random() * SKIN_KEYS.length)], true);
@@ -1239,7 +1306,7 @@ function hostStart() {
   const seed = Math.floor(Math.random() * 1e9);
   hostReset(seed);
   S.phase = 'play';
-  broadcast({ t: 'start', seed });
+  broadcast({ t: 'start', seed, mode: S.mode });
   broadcast({ t: 'loot', l: S.loot.map(l => [l.id, l.type, l.x, l.z]) });
   H_.lootDirty = false;
   startMatchView(seed, true);
@@ -1252,7 +1319,8 @@ function startMatchView(seed, hostSide = false) {
   S.phase = 'play'; spectating = null; ended = false;
   showScreen(null);
   $('feed').innerHTML = '';
-  centerMsg('RANABHUMI', 'Find weapons · Stay in the safe zone · Be the last warrior', 3.2);
+  if (S.mode === 'duel') centerMsg('1 VS 1 DUEL', 'First to win 2 rounds · Weapons around the stupa', 3.2);
+  else centerMsg('RANABHUMI', 'Find weapons · Stay in the safe zone · Be the last warrior', 3.2);
   sfx('gong');
   camYaw = 0; camPitch = 0.25;
   setTimeout(() => { const p = me(); if (p) camYaw = p.yaw; }, 120);
@@ -1266,7 +1334,8 @@ function onEnd(winId, winName) {
   if (won) sfx('win');
   setTimeout(() => {
     $('overT').textContent = won ? 'VICTORY!' : (winName ? `${winName} WINS` : 'MATCH OVER');
-    $('overS').innerHTML = won ? `Last warrior standing on Ranabhumi.<br>Kills: <b>${meP ? meP.kills : 0}</b>` : `You placed <b>#${meP && meP.place ? meP.place : '?'}</b> with <b>${meP ? meP.kills : 0}</b> kills.`;
+    if (S.mode === 'duel') $('overS').innerHTML = (won ? 'You won the duel.' : 'You lost the duel.') + `<br>${esc(S.zoneText.split(' · ').find(t => t.includes('–')) || '')}`;
+    else $('overS').innerHTML = won ? `Last warrior standing on Ranabhumi.<br>Kills: <b>${meP ? meP.kills : 0}</b>` : `You placed <b>#${meP && meP.place ? meP.place : '?'}</b> with <b>${meP ? meP.kills : 0}</b> kills.`;
     $('bAgain').style.display = isHost ? '' : 'none';
     $('bSpec').style.display = 'none';
     showScreen('over'); document.exitPointerLock?.();
@@ -1314,7 +1383,7 @@ function fxHit(x, y, z, srcId, tId, n, arm) {
 function fxKill(x, z, id, place) {
   sparks(x, H(x, z) + 1, z, 0xffd27a, 40);
   sfx('kill', x, z);
-  if (id === S.myId && !ended) {
+  if (id === S.myId && !ended && S.mode !== 'duel') {
     centerMsg('YOU FELL', `Placed #${place} · Press Spectate on the end screen or keep watching`, 4);
     setTimeout(() => { if (!ended) { $('overT').textContent = 'DEFEATED'; $('overS').innerHTML = `You placed <b>#${place}</b> with <b>${me() ? me().kills : 0}</b> kills.`; $('bAgain').style.display = 'none'; $('bSpec').style.display = ''; showScreen('over'); document.exitPointerLock?.(); } }, 2500);
   }
@@ -1338,7 +1407,12 @@ function showErr(t) { $('err').textContent = t; }
 function renderLobby() {
   const list = isHost ? [...S.players.values()].map(p => [p.id, p.name, p.skin]) : (S.lobby || []);
   $('plist').innerHTML = list.map(([id, n, s]) => `<li>${id === S.myId ? '⭐ ' : ''}${esc(n)} <span style="color:#b9a785">· ${SKINS[s] ? SKINS[s].label : ''}</span>${id === 1 ? ' <span style="color:#e0b45e">(host)</span>' : ''}</li>`).join('') +
-    `<li style="color:#b9a785">+ ${Math.max(0, MAX_PLAYERS - list.length)} bots</li>`;
+    (S.mode === 'duel' ? (list.length < 2 ? `<li style="color:#b9a785">Waiting for an opponent…</li>` : '') : `<li style="color:#b9a785">+ ${Math.max(0, MAX_PLAYERS - list.length)} bots</li>`);
+}
+function setLobbyText() {
+  const duel = S.mode === 'duel';
+  $('lobbyKicker').textContent = duel ? '1 vs 1 Duel Room' : 'Online Room';
+  if (isHost) $('lobbyNote').textContent = (duel ? 'Share the code with one friend. Start alone to fight a bot.' : 'Bots fill the island up to 12 warriors.') + ' Keep this page open while friends join.';
 }
 let centerT = 0;
 function centerMsg(t, s = '', d = 2.5) { $('center').innerHTML = esc(t) + (s ? `<small>${esc(s)}</small>` : ''); $('center').style.opacity = 1; centerT = d; }
@@ -1361,8 +1435,10 @@ function showFeed(html) {
   const q = new URLSearchParams(location.search).get('room');
   if (q) $('code').value = q.toUpperCase();
 }
-$('bSolo').onclick = startSolo;
-$('bHost').onclick = () => { initAudio(); hostRoom(); };
+$('bSolo').onclick = () => startSolo('br');
+$('bHost').onclick = () => { initAudio(); hostRoom('br'); };
+$('bDuel').onclick = () => { initAudio(); hostRoom('duel'); };
+$('bDuelBot').onclick = () => startSolo('duel');
 $('bJoin').onclick = () => { initAudio(); joinRoom($('code').value); };
 $('bStart').onclick = () => { if (isHost) hostStart(); };
 $('bLeave').onclick = toMenu;
