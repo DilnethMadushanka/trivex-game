@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <title>Raksha Rana</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@500;700;900&family=Inter:wght@400;600;800&display=swap" rel="stylesheet">
@@ -51,6 +51,24 @@
   #banner { position:absolute; top:36%; width:100%; text-align:center; font-family:Cinzel; font-weight:900; font-size:clamp(48px,9vw,110px);
     letter-spacing:8px; color:#f6d999; text-shadow:0 0 30px #c8321c, 0 4px 0 #5a1a0a; opacity:0; transform:scale(1.3); transition:opacity .2s, transform .25s; }
   #banner.show { opacity:1; transform:scale(1); }
+  /* touch pad */
+  #pad { position:fixed; inset:0; pointer-events:none; display:none; }
+  body.touch #hud:not(.hidden) ~ #pad { display:block; }
+  body.touch .legend { display:none; }
+  .pb { position:absolute; pointer-events:auto; touch-action:none; width:60px; height:60px; border-radius:50%; border:2px solid #e0b45e88; background:#140c08b3;
+    color:#f3e6c8; display:grid; place-items:center; font:700 11px Inter, sans-serif; letter-spacing:1px; user-select:none; -webkit-user-select:none; }
+  .pb.down { background:#e0b45ecc; color:#1a0e07; }
+  .pb.arrow { border-radius:12px; font-size:22px; }
+  #pL { left:calc(20px + env(safe-area-inset-left)); bottom:70px; } #pR { left:calc(150px + env(safe-area-inset-left)); bottom:70px; }
+  #pU { left:calc(85px + env(safe-area-inset-left)); bottom:135px; } #pD { left:calc(85px + env(safe-area-inset-left)); bottom:16px; }
+  #pJ { right:calc(160px + env(safe-area-inset-right)); bottom:20px; } #pK { right:calc(90px + env(safe-area-inset-right)); bottom:60px; width:66px; height:66px; }
+  #pL2 { right:calc(20px + env(safe-area-inset-right)); bottom:100px; width:66px; height:66px; } #pG { right:calc(160px + env(safe-area-inset-right)); bottom:96px; }
+  #pI { right:calc(30px + env(safe-area-inset-right)); bottom:180px; border-color:#3fbf8f; } #pS { right:calc(100px + env(safe-area-inset-right)); bottom:150px; width:52px; height:52px; }
+  #pP { right:12px; top:70px; width:42px; height:42px; }
+  #rotate { display:none; }
+  @media (pointer: coarse) and (orientation: portrait) {
+    #rotate { display:flex; position:fixed; inset:0; z-index:50; background:#0b0705f2; align-items:center; justify-content:center; text-align:center; font-size:18px; padding:24px; }
+  }
   .legend { position:absolute; bottom:16px; left:20px; font-size:12px; color:var(--dim); display:flex; gap:6px; flex-wrap:wrap; align-items:center; max-width:70%; }
   kbd { display:inline-block; min-width:18px; text-align:center; border:1px solid #3fbf8f88; border-radius:3px; padding:2px 6px; background:#0b0705aa; color:var(--fg); font-family:Inter; font-size:12px; }
   .legend span { margin-right:10px; }
@@ -59,6 +77,7 @@
   #pause { background:#0b0705cc; }
   .keysGrid { display:grid; grid-template-columns:auto auto auto; gap:8px 22px; text-align:left; font-size:14px; margin-top:16px; }
   .keysGrid b { color:var(--gold); font-weight:600; }
+  body.touch .keysGrid, body.touch .note { display:none; }
 </style>
 </head>
 <body>
@@ -112,6 +131,15 @@
   </div>
 </div>
 
+<div id="pad">
+  <div class="pb arrow" id="pL" data-k="KeyA">◀</div><div class="pb arrow" id="pR" data-k="KeyD">▶</div>
+  <div class="pb arrow" id="pU" data-k="KeyW">▲</div><div class="pb arrow" id="pD" data-k="KeyS">▼</div>
+  <div class="pb" id="pJ" data-k="KeyJ">PALM</div><div class="pb" id="pK" data-k="KeyK">HEAVY</div><div class="pb" id="pL2" data-k="KeyL">KICK</div>
+  <div class="pb" id="pG" data-k="KeyG">THROW</div><div class="pb" id="pI" data-k="KeyI">POWER</div><div class="pb" id="pS" data-k="ShiftLeft">GUARD</div>
+  <div class="pb" id="pP" data-k="Escape">II</div>
+</div>
+<div id="rotate"><div><div style="font-size:56px">📱</div>Turn your phone sideways to play<br><small style="color:#b9a785">ෆෝන් එක හරහට කරන්න</small></div></div>
+
 <div id="pause" class="screen hidden">
   <h1 class="serif" style="letter-spacing:8px;color:#f6d999">PAUSED</h1>
   <div class="row"><button class="btn" id="bResume">Resume</button><button class="btn ghost" id="bQuit">Main Menu</button></div>
@@ -123,6 +151,23 @@
   <div class="row" id="endBtns"></div>
 </div>
 
+<script>
+// Touch pad: each button sends the same key events as the keyboard controls.
+(function () {
+  const touch = matchMedia('(pointer: coarse)').matches || ('ontouchstart' in window && navigator.maxTouchPoints > 0);
+  if (!touch) return;
+  document.body.classList.add('touch');
+  const send = (type, code) => dispatchEvent(new KeyboardEvent(type, { code, bubbles: true }));
+  document.querySelectorAll('#pad .pb').forEach(b => {
+    const code = b.dataset.k;
+    const down = e => { e.preventDefault(); b.classList.add('down'); send('keydown', code); };
+    const up = () => { if (!b.classList.contains('down')) return; b.classList.remove('down'); send('keyup', code); };
+    b.addEventListener('pointerdown', down); b.addEventListener('pointerup', up);
+    b.addEventListener('pointercancel', up); b.addEventListener('pointerleave', up);
+  });
+  document.addEventListener('touchmove', e => { if (!document.getElementById('hud').classList.contains('hidden')) e.preventDefault(); }, { passive: false });
+})();
+</script>
 <script type="importmap">
 { "imports": {
   "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",

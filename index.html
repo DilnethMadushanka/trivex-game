@@ -2,7 +2,9 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
 <title>Ranabhumi</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@600;800&family=Inter:wght@400;600;800&display=swap" rel="stylesheet">
@@ -67,6 +69,42 @@
   #dmg { position:fixed; inset:0; pointer-events:none; box-shadow:inset 0 0 120px #ff1a00; opacity:0; transition:opacity .3s; }
   #zoneTint { position:fixed; inset:0; pointer-events:none; background:#7a2aff; opacity:0; transition:opacity .4s; mix-blend-mode:screen; }
   #clickHint { position:absolute; bottom:90px; width:100%; text-align:center; font-size:14px; color:var(--dim); }
+  /* ---------- touch controls ---------- */
+  #touch { position:fixed; inset:0; pointer-events:none; display:none; touch-action:none; }
+  body.touch.playing #touch { display:block; }
+  body.touch #clickHint, body.touch .keys.desk { display:none; }
+  #joyZone { position:absolute; left:0; top:25%; bottom:0; width:42%; pointer-events:auto; touch-action:none; }
+  #lookZone { position:absolute; right:0; top:0; bottom:0; width:58%; pointer-events:auto; touch-action:none; }
+  #joy { position:absolute; left:40px; bottom:40px; width:140px; height:140px; border-radius:50%; border:2px solid #e0b45e66; background:#0b070555; opacity:.55; pointer-events:none; }
+  #joy:not(.on) { left:calc(40px + env(safe-area-inset-left)) !important; top:auto !important; bottom:40px; }
+  #joy.on { opacity:.9; }
+  #joyKnob { position:absolute; left:45px; top:45px; width:50px; height:50px; border-radius:50%; background:radial-gradient(circle at 35% 35%, #f6d999, #a87a2c); box-shadow:0 2px 10px #000a; }
+  .tbtn { position:absolute; pointer-events:auto; touch-action:none; border-radius:50%; border:2px solid #e0b45e99; background:#140c08b3; color:var(--fg);
+    display:grid; place-items:center; font-weight:800; font-size:12px; letter-spacing:1px; user-select:none; -webkit-user-select:none; }
+  .tbtn.down, .tbtn.lit { background:#e0b45ecc; color:#1a0e07; }
+  #tAtk { width:92px; height:92px; right:calc(34px + env(safe-area-inset-right)); bottom:44px; font-size:30px; border-color:#ff8a5a; }
+  #tJump { width:62px; height:62px; right:calc(140px + env(safe-area-inset-right)); bottom:30px; }
+  #tPick { width:56px; height:56px; right:calc(140px + env(safe-area-inset-right)); bottom:108px; }
+  #tSwap { width:56px; height:56px; right:calc(52px + env(safe-area-inset-right)); bottom:150px; }
+  #tRun { width:52px; height:52px; left:calc(200px + env(safe-area-inset-left)); bottom:40px; }
+  #tFull { width:40px; height:40px; left:calc(14px + env(safe-area-inset-left)); top:auto; bottom:200px; font-size:16px; }
+  @media (pointer: coarse) {
+    #minimap { width:110px; height:110px; }
+    .stat { font-size:17px; margin-top:4px; }
+    .bars { bottom:auto; top:44px; width:min(300px,40vw); }
+    #slots { bottom:8px; right:auto; left:50%; transform:translateX(-50%); gap:4px; }
+    .slot { width:auto; padding:4px 8px; font-size:11px; }
+    #zoneInfo { top:8px; font-size:11px; padding:4px 12px; }
+    #feed { font-size:11px; max-width:38vw; }
+    #prompt { top:auto; bottom:210px; right:24px; left:auto; transform:none; font-size:13px; }
+    #center { font-size:28px; }
+  }
+  #rotate { display:none; }
+  @media (pointer: coarse) and (orientation: portrait) {
+    #rotate { display:flex; position:fixed; inset:0; z-index:50; background:#0b0705f2; flex-direction:column; align-items:center; justify-content:center; text-align:center; font-size:18px; padding:24px; }
+    #rotate b { font-size:56px; display:block; margin-bottom:12px; animation:rot 1.6s ease-in-out infinite; }
+    @keyframes rot { 50% { transform:rotate(90deg); } }
+  }
 </style>
 </head>
 <body>
@@ -94,7 +132,7 @@
     </div>
     <div class="err" id="err"></div>
   </div>
-  <div class="keys">
+  <div class="keys desk">
     <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> move · <kbd>Mouse</kbd> look · <kbd>Left click</kbd> attack · <kbd>Shift</kbd> sprint · <kbd>Space</kbd> jump<br>
     <kbd>E</kbd> pick up · <kbd>1</kbd><kbd>2</kbd> / <kbd>Q</kbd> switch weapon · <kbd>Esc</kbd> release mouse
   </div>
@@ -134,6 +172,19 @@
   </div>
   <div id="slots"><div class="slot on" id="s0"><b>1</b><span>Fists</span></div><div class="slot" id="s1"><b>2</b><span>Fists</span></div></div>
 </div>
+
+<div id="touch">
+  <div id="lookZone"></div>
+  <div id="joyZone"></div>
+  <div id="joy"><div id="joyKnob"></div></div>
+  <div class="tbtn" id="tAtk">⚔</div>
+  <div class="tbtn" id="tJump">JUMP</div>
+  <div class="tbtn" id="tPick">PICK</div>
+  <div class="tbtn" id="tSwap">SWAP</div>
+  <div class="tbtn" id="tRun">RUN</div>
+  <div class="tbtn" id="tFull">⛶</div>
+</div>
+<div id="rotate"><div><b>📱</b>Turn your phone sideways to play<br><small style="color:#b9a785">ෆෝන් එක හරහට කරන්න</small></div></div>
 
 <div id="over" class="screen hidden">
   <h1 id="overT" style="font-size:clamp(40px,7vw,80px)"></h1>
