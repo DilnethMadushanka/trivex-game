@@ -128,7 +128,7 @@ function buildWorld(seed) {
   // sea
   const sea = new THREE.Mesh(new THREE.CircleGeometry(400, 64), new THREE.MeshStandardMaterial({ color: 0x2a6a8a, roughness: 0.25, metalness: 0.3, transparent: true, opacity: 0.88 }));
   sea.rotation.x = -Math.PI / 2; sea.position.y = 0.15; group.add(sea);
-  world = { group, sea, rocks: null };
+  world = { group, sea, rocks: null, trees: null, treeLow: null, treeReal: null };
 
   // trees (instanced)
   const trunkGeo = new THREE.CylinderGeometry(0.18, 0.3, 3, 6); trunkGeo.translate(0, 1.5, 0);
@@ -154,6 +154,9 @@ function buildWorld(seed) {
   }
   trunks.count = leaves.count = n;
   group.add(trunks, leaves);
+  // remember every tree so a loaded model can take over the near ones (see updateTreeLOD)
+  const trees = [];
+  for (let i = 0; i < n; i++) { const mm = new THREE.Matrix4(); trunks.getMatrixAt(i, mm); const c = new THREE.Color(); leaves.getColorAt(i, c); trees.push({ m: mm, c, x: mm.elements[12], z: mm.elements[14] }); }
   // rocks
   const rockMat = new THREE.MeshStandardMaterial({ color: 0x8a8070, roughness: 1, flatShading: true });
   const rocks = [];
@@ -168,6 +171,7 @@ function buildWorld(seed) {
     rocks.push({ mesh: rk, x, y, z, sc, rot: rnd() * TAU });
     colliders.push({ x, z, r: sc * 0.85 });
   }
+  world.trees = trees; world.treeLow = { trunks, leaves };
   world.rocks = rocks;
   applyProps();
   // ruins: broken pillar rings
@@ -388,7 +392,46 @@ function propSource(g) {
   geo.translate(-(b.min.x + b.max.x) / 2, -b.min.y, -(b.min.z + b.max.z) / 2); geo.scale(1 / w, 1 / w, 1 / w);
   return { geo, mat: mesh.material };
 }
+function multiSource(g) {
+  // every mesh of a model, sharing one transform: trunk centred on x/z, base at y=0, height 1
+  const parts = []; let trunk = null;
+  g.scene.updateMatrixWorld(true);
+  g.scene.traverse(o => { if (!o.isMesh) return; const geo = o.geometry.clone(); geo.applyMatrix4(o.matrixWorld); geo.computeBoundingBox(); parts.push({ geo, mat: o.material }); if (!trunk && !o.material.transparent && !/leaf|leaves/i.test(o.material.name)) trunk = geo; });
+  if (!parts.length) return null;
+  const all = new THREE.Box3(); parts.forEach(p => all.union(p.geo.boundingBox));
+  const tb = (trunk || parts[0].geo).boundingBox, h = (all.max.y - all.min.y) || 1;
+  for (const p of parts) {
+    p.geo.translate(-(tb.min.x + tb.max.x) / 2, -all.min.y, -(tb.min.z + tb.max.z) / 2); p.geo.scale(1 / h, 1 / h, 1 / h);
+    // leaves: cut-out instead of blending, so thousands of them sort correctly and cast shadows
+    if (p.mat.transparent || p.mat.alphaMode === 'BLEND' || /leaf|leaves/i.test(p.mat.name)) { p.mat.transparent = false; p.mat.alphaTest = 0.5; p.mat.side = THREE.DoubleSide; }
+  }
+  return parts;
+}
+// Trees near the camera use the real model; far ones keep the cheap low-poly shape (hidden by fog anyway).
+const TREE_NEAR = IS_TOUCH ? 32 : 48, TREE_MAX = IS_TOUCH ? 24 : 60, TREE_H = 5.4;
+let treeLodT = 0;
+function updateTreeLOD(cx, cz, force) {
+  if (!world || !world.trees || !PROPS.tree) return;
+  if (!world.treeReal) {
+    world.treeReal = PROPS.tree.map(p => { const im = new THREE.InstancedMesh(p.geo, p.mat, world.trees.length); im.castShadow = im.receiveShadow = true; im.frustumCulled = false; im.count = 0; world.group.add(im); return im; });
+    force = true;
+  }
+  treeLodT -= 1; if (treeLodT > 0 && !force) return; treeLodT = 15;
+  const { trunks, leaves } = world.treeLow, real = world.treeReal;
+  const m = new THREE.Matrix4(), sm = new THREE.Matrix4().makeScale(TREE_H, TREE_H, TREE_H);
+  let nl = 0, nr = 0;
+  for (const t of world.trees) t.d = Math.hypot(t.x - cx, t.z - cz);
+  const near = new Set(world.trees.filter(t => t.d < TREE_NEAR).sort((a, b) => a.d - b.d).slice(0, TREE_MAX));
+  for (const t of world.trees) {
+    if (near.has(t)) { m.multiplyMatrices(t.m, sm); for (const im of real) im.setMatrixAt(nr, m); nr++; }
+    else { trunks.setMatrixAt(nl, t.m); leaves.setMatrixAt(nl, t.m); leaves.setColorAt(nl, t.c); nl++; }
+  }
+  trunks.count = leaves.count = nl; for (const im of real) im.count = nr;
+  trunks.instanceMatrix.needsUpdate = leaves.instanceMatrix.needsUpdate = true; if (leaves.instanceColor) leaves.instanceColor.needsUpdate = true;
+  for (const im of real) im.instanceMatrix.needsUpdate = true;
+}
 function applyProps() {
+  updateTreeLOD(camera.position.x, camera.position.z, true);
   if (!world || !world.rocks || !PROPS.rock || world.rockInst) return;
   const { geo, mat } = PROPS.rock, list = world.rocks;
   const inst = new THREE.InstancedMesh(geo, mat, list.length);
@@ -407,7 +450,7 @@ async function loadModels() {
   try { const r = await fetch('models/models.json', { cache: 'no-cache' }); if (!r.ok) return; manifest = await r.json(); } catch (e) { return; }
   const loader = new GLTFLoader();
   for (const [key, url] of Object.entries(manifest.props || {})) {
-    try { const src = propSource(await loader.loadAsync(url)); if (src) PROPS[key] = src; } catch (e) { console.warn('prop load failed', url, e); }
+    try { const g = await loader.loadAsync(url); const src = key === 'tree' ? multiSource(g) : propSource(g); if (src) PROPS[key] = src; } catch (e) { console.warn('prop load failed', url, e); }
   }
   applyProps();
   const sharedClips = [];
@@ -1310,6 +1353,7 @@ function frame() {
   time += dt;
   zoneMat.uniforms.uT.value = time;
   if (world) world.sea.position.y = 0.15 + Math.sin(time * 0.6) * 0.08;
+  updateTreeLOD(camera.position.x, camera.position.z);
 
   if (S.phase === 'play') {
     const inp = gatherInput();

@@ -26,6 +26,7 @@
     "models/anim/fightidle.glb"
   ],
   "props": {
-    "rock": "models/props/boulder.glb"
+    "rock": "models/props/boulder.glb",
+    "tree": "models/props/tree.glb"
   }
 }
