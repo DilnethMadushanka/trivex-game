@@ -7,9 +7,25 @@
     "sena": "models/vanguard.glb",
     "mala": "models/vanguard.glb"
   },
-  "tints": { "hiri": "#5fbf8f", "gini": "#ff5a2a", "andura": "#9a60ff", "sena": "#c0392b", "mala": "#4a90c8" },
+  "tints": {
+    "hiri": "#5fbf8f",
+    "gini": "#ff5a2a",
+    "andura": "#9a60ff",
+    "sena": "#c0392b",
+    "mala": "#4a90c8"
+  },
   "animations": [
-    "models/anim/run.glb", "models/anim/slash.glb", "models/anim/attack.glb", "models/anim/kick.glb",
-    "models/anim/hit.glb", "models/anim/death.glb", "models/anim/jump.glb", "models/anim/block.glb", "models/anim/fightidle.glb"
-  ]
+    "models/anim/run.glb",
+    "models/anim/slash.glb",
+    "models/anim/attack.glb",
+    "models/anim/kick.glb",
+    "models/anim/hit.glb",
+    "models/anim/death.glb",
+    "models/anim/jump.glb",
+    "models/anim/block.glb",
+    "models/anim/fightidle.glb"
+  ],
+  "props": {
+    "rock": "models/props/boulder.glb"
+  }
 }
