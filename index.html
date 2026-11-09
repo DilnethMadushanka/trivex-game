@@ -56,6 +56,20 @@
   .dnum.big { color:#ffb030; font-size:30px; }
   .dnum.arm { color:#8ac4ff; }
   .dnum.me { color:#ff5a3a; font-size:18px; }
+  .dnum.blk { color:#cfe6ff; font-size:18px; letter-spacing:1px; }
+  .dnum.dodge { color:#bfe0ff; font-size:18px; letter-spacing:2px; font-style:italic; }
+  .bar.st { height:6px; margin-top:4px; }
+  #stf { background:linear-gradient(90deg,#e0b45e,#fff2cf); transition:width .1s; }
+  #abil { position:absolute; bottom:24px; left:calc(50% + min(210px,30vw) + 16px); display:flex; gap:8px; align-items:flex-end; }
+  .ab { width:46px; height:46px; border-radius:50%; background:var(--panel); border:2px solid #e0b45e88; display:grid; place-items:center; position:relative; font-size:20px; transition:opacity .15s, border-color .15s, transform .1s; }
+  .ab .k { position:absolute; bottom:-14px; font-size:9px; letter-spacing:1px; color:var(--dim); font-weight:600; }
+  .ab.on { border-color:#7ab8ff; box-shadow:0 0 14px #7ab8ff88; transform:scale(1.08); }
+  .ab.off { opacity:.35; }
+  #abCombo { font-family:Cinzel; font-weight:800; font-size:26px; color:#ffb030; text-shadow:0 2px 0 #3a1408, 0 0 10px #000; min-width:40px; }
+  #combo { position:absolute; top:36%; width:100%; text-align:center; font-family:Cinzel; font-weight:800; font-size:clamp(20px,3.4vw,34px); letter-spacing:4px; color:#ffb030; text-shadow:0 0 18px #d8432a, 0 3px 0 #3a1408; opacity:0; }
+  #combo.go { animation:combo .9s ease-out; }
+  @keyframes combo { 0% { opacity:0; transform:scale(1.8); } 15% { opacity:1; transform:scale(1); } 70% { opacity:1; } 100% { opacity:0; transform:translateY(-20px); } }
+  body.touch #abil { display:none; }
   #hptr { background:#fff6; transition:width .6s .25s; }
   body.lowhp #hpf { animation:pulse .7s infinite alternate; }
   body.lowhp #dmg { opacity:.35 !important; animation:pulse .9s infinite alternate; }
@@ -102,6 +116,8 @@
   #tJump { width:62px; height:62px; right:calc(140px + env(safe-area-inset-right)); bottom:30px; }
   #tPick { width:56px; height:56px; right:calc(140px + env(safe-area-inset-right)); bottom:108px; }
   #tSwap { width:56px; height:56px; right:calc(52px + env(safe-area-inset-right)); bottom:150px; }
+  #tBlock { width:60px; height:60px; right:calc(222px + env(safe-area-inset-right)); bottom:44px; font-size:22px; border-color:#7ab8ff; }
+  #tRoll { width:56px; height:56px; right:calc(222px + env(safe-area-inset-right)); bottom:118px; font-size:24px; }
   #tRun { width:52px; height:52px; left:calc(200px + env(safe-area-inset-left)); bottom:40px; }
   #tFull { width:40px; height:40px; left:calc(14px + env(safe-area-inset-left)); top:auto; bottom:200px; font-size:16px; }
   @media (pointer: coarse) {
@@ -155,6 +171,7 @@
   </div>
   <div class="keys desk">
     <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> move · <kbd>Mouse</kbd> look · <kbd>Left click</kbd> attack · <kbd>Shift</kbd> sprint · <kbd>Space</kbd> jump<br>
+    <kbd>Right click</kbd> block · <kbd>C</kbd> dodge roll<br>
     <kbd>E</kbd> pick up · <kbd>1</kbd><kbd>2</kbd> / <kbd>Q</kbd> switch weapon · <kbd>Esc</kbd> release mouse
   </div>
   <div class="keys" style="margin-top:14px">More games: <a href="fight/" style="color:#e0b45e">Raksha Rana (fighting)</a> · <a href="neon-rift/" style="color:#e0b45e">Neon Rift</a></div>
@@ -190,7 +207,14 @@
     <div class="bar"><div id="arf" style="width:0"></div></div>
     <div class="lbl" style="margin-top:6px"><span>HEALTH</span><span id="hpT">100</span></div>
     <div class="bar"><div id="hptr"></div><div id="hpf"></div></div>
+    <div class="bar st"><div id="stf"></div></div>
   </div>
+  <div id="abil">
+    <div class="ab" id="abBlock"><span>🛡</span><b class="k">RMB</b></div>
+    <div class="ab" id="abRoll"><span>↻</span><b class="k">C</b></div>
+    <div id="abCombo"></div>
+  </div>
+  <div id="combo">COMBO FINISHER!</div>
   <div id="slots"><div class="slot on" id="s0"><b>1</b><span>Fists</span></div><div class="slot" id="s1"><b>2</b><span>Fists</span></div></div>
 </div>
 
@@ -203,6 +227,8 @@
   <div class="tbtn" id="tPick">PICK</div>
   <div class="tbtn" id="tSwap">SWAP</div>
   <div class="tbtn" id="tRun">RUN</div>
+  <div class="tbtn" id="tBlock">🛡</div>
+  <div class="tbtn" id="tRoll">↻</div>
   <div class="tbtn" id="tFull">⛶</div>
 </div>
 <div id="rotate"><div><b>📱</b>Turn your phone sideways to play<br><small style="color:#b9a785">ෆෝන් එක හරහට කරන්න</small></div></div>
