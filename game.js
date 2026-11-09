@@ -128,7 +128,7 @@ function buildWorld(seed) {
   // sea
   const sea = new THREE.Mesh(new THREE.CircleGeometry(400, 64), new THREE.MeshStandardMaterial({ color: 0x2a6a8a, roughness: 0.25, metalness: 0.3, transparent: true, opacity: 0.88 }));
   sea.rotation.x = -Math.PI / 2; sea.position.y = 0.15; group.add(sea);
-  world = { group, sea };
+  world = { group, sea, rocks: null };
 
   // trees (instanced)
   const trunkGeo = new THREE.CylinderGeometry(0.18, 0.3, 3, 6); trunkGeo.translate(0, 1.5, 0);
@@ -156,6 +156,7 @@ function buildWorld(seed) {
   group.add(trunks, leaves);
   // rocks
   const rockMat = new THREE.MeshStandardMaterial({ color: 0x8a8070, roughness: 1, flatShading: true });
+  const rocks = [];
   for (let i = 0; i < 70; i++) {
     const a = rnd() * TAU, rr = 16 + rnd() * (ISLAND_R - 20);
     const x = Math.cos(a) * rr, z = Math.sin(a) * rr, y = H(x, z);
@@ -164,8 +165,11 @@ function buildWorld(seed) {
     const rk = new THREE.Mesh(new THREE.DodecahedronGeometry(sc, 0), rockMat);
     rk.position.set(x, y + sc * 0.3, z); rk.rotation.set(rnd() * 3, rnd() * 3, rnd() * 3); rk.scale.y = 0.7;
     rk.castShadow = rk.receiveShadow = true; group.add(rk);
+    rocks.push({ mesh: rk, x, y, z, sc, rot: rnd() * TAU });
     colliders.push({ x, z, r: sc * 0.85 });
   }
+  world.rocks = rocks;
+  applyProps();
   // ruins: broken pillar rings
   const stone = new THREE.MeshStandardMaterial({ color: 0xc8a882, roughness: 0.9 });
   for (let k = 0; k < 7; k++) {
@@ -370,10 +374,42 @@ function stripRootMotion(clip) {
   }
   return clip;
 }
+// Realistic map props (models.json "props": { "rock": "models/props/boulder.glb" }).
+// The procedural world still decides where things go and their colliders; a loaded model
+// only replaces how they look, so every player sees the same island.
+const PROPS = {};
+function propSource(g) {
+  // one mesh, centred on x/z, base at y=0, scaled so its widest side is 1 unit
+  let mesh = null; g.scene.traverse(o => { if (o.isMesh && !mesh) mesh = o; });
+  if (!mesh) return null;
+  mesh.updateWorldMatrix(true, false);
+  const geo = mesh.geometry.clone(); geo.applyMatrix4(mesh.matrixWorld); geo.computeBoundingBox();
+  const b = geo.boundingBox, w = Math.max(b.max.x - b.min.x, b.max.z - b.min.z) || 1;
+  geo.translate(-(b.min.x + b.max.x) / 2, -b.min.y, -(b.min.z + b.max.z) / 2); geo.scale(1 / w, 1 / w, 1 / w);
+  return { geo, mat: mesh.material };
+}
+function applyProps() {
+  if (!world || !world.rocks || !PROPS.rock || world.rockInst) return;
+  const { geo, mat } = PROPS.rock, list = world.rocks;
+  const inst = new THREE.InstancedMesh(geo, mat, list.length);
+  const m = new THREE.Matrix4(), q = new THREE.Quaternion(), up = new THREE.Vector3(0, 1, 0), v = new THREE.Vector3(), s = new THREE.Vector3();
+  list.forEach((r, i) => {
+    r.mesh.visible = false;
+    const w = r.sc * 2.3;
+    m.compose(v.set(r.x, r.y - r.sc * 0.25, r.z), q.setFromAxisAngle(up, r.rot), s.set(w, w * 1.1, w));
+    inst.setMatrixAt(i, m);
+  });
+  inst.castShadow = inst.receiveShadow = true;
+  world.group.add(inst); world.rockInst = inst;
+}
 async function loadModels() {
   let manifest;
   try { const r = await fetch('models/models.json', { cache: 'no-cache' }); if (!r.ok) return; manifest = await r.json(); } catch (e) { return; }
   const loader = new GLTFLoader();
+  for (const [key, url] of Object.entries(manifest.props || {})) {
+    try { const src = propSource(await loader.loadAsync(url)); if (src) PROPS[key] = src; } catch (e) { console.warn('prop load failed', url, e); }
+  }
+  applyProps();
   const sharedClips = [];
   for (const url of manifest.animations || []) {
     // Mixamo names every clip "mixamo.com", so fall back to the file name (models/anim/run.glb -> run)
@@ -1147,6 +1183,8 @@ addEventListener('mouseup', e => { if (e.button === 0) mouseDown = false; });
 document.addEventListener('pointerlockchange', () => { locked = document.pointerLockElement === canvas; $('clickHint').style.display = locked ? 'none' : ''; });
 addEventListener('mousemove', e => {
   if (!locked) return;
+  // Chrome sometimes sends one huge jump right after pointer lock starts; ignore it
+  if (Math.abs(e.movementX) > 250 || Math.abs(e.movementY) > 250) return;
   camYaw -= e.movementX * 0.0024;
   camPitch = clamp(camPitch + e.movementY * 0.0022, -0.9, 1.1);
 });
@@ -1362,4 +1400,4 @@ function frame() {
   renderer.render(scene, camera);
 }
 frame();
-window.__S = S; window.__H = H_; window.__step = hostStep; window.__views = views;
+window.__S = S; window.__H = H_; window.__step = hostStep; window.__views = views; window.__world = () => world; window.__camera = camera; window.__cp = () => [camYaw, camPitch];
