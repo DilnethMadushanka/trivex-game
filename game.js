@@ -354,6 +354,7 @@ const POSE = {
   air: P({ lH: -0.9, lK: 1.2, rH: -0.3, rK: 0.8, lSx: -0.8, rSx: -0.8, lSz: 0.6, rSz: 0.6 }),
   dead: P({ fall: 1.5, hipY: -0.75, lSx: -2.6, lSz: 0.6, lE: -0.3, rSx: -2.7, rSz: 0.5, rE: -0.3, lH: -0.3, lK: 0.6, rK: 0.2, head: 0.3 }),
   hit: P({ lean: -0.35, head: -0.4, lSz: 0.6, rSz: 0.6, lE: -0.6, rE: -0.6 }),
+  block: P({ rSx: -1.5, rSz: -0.35, rE: -1.5, lSx: -1.5, lSz: 0.35, lE: -1.5, lean: 0.12, hipY: -0.1, lK: 0.35, rK: 0.35, head: 0.1 }),
   // attacks: [windup, strike]
   fistW: P({ rSx: -0.9, rE: -2.2, twist: -0.3 }), fistS: P({ rSx: -1.6, rE: -0.05, twist: 0.4, lean: 0.2 }),
   swordW: P({ rSx: -2.7, rSz: 0.7, rE: -0.7, twist: -0.6, lean: -0.05 }), swordS: P({ rSx: -0.9, rSz: -0.5, rE: -0.15, twist: 0.7, lean: 0.35, lH: -0.4, lK: 0.5 }),
@@ -373,7 +374,7 @@ const POSE_KEYS = Object.keys(BASE);
 const MODEL_CACHE = {};
 const CLIP_KEYS = {
   idle: ['idle'], run: ['run', 'sprint'], walk: ['walk'], slash: ['slash', 'sword', 'swing', 'attack'], punch: ['punch', 'jab', 'cross'],
-  kick: ['kick'], bow: ['arrow', 'bow', 'draw', 'shoot'], hit: ['hit', 'react', 'impact'], die: ['dying', 'death', 'die'], jump: ['jump'],
+  kick: ['kick'], block: ['block'], bow: ['arrow', 'bow', 'draw', 'shoot'], hit: ['hit', 'react', 'impact'], die: ['dying', 'death', 'die'], jump: ['jump'],
 };
 function mapClips(clips) {
   const map = {};
@@ -383,7 +384,7 @@ function mapClips(clips) {
   }
   map.run = map.run || map.walk; map.idle = map.idle || clips[0];
   map.punch = map.punch || map.slash; map.slash = map.slash || map.punch; map.kick = map.kick || map.punch;
-  map.bow = map.bow || map.punch;
+  map.bow = map.bow || map.punch; map.block = map.block || map.idle;
   return map;
 }
 function stripRootMotion(clip) {
@@ -468,23 +469,19 @@ async function loadModels() {
   let manifest;
   try { const r = await fetch('models/models.json', { cache: 'no-cache' }); if (!r.ok) return; manifest = await r.json(); } catch (e) { return; }
   const loader = new GLTFLoader();
-  for (const [key, url] of Object.entries(manifest.props || {})) {
-    try {
-      const g = await loader.loadAsync(url);
-      const src = key === 'tree' ? multiSource(g) : key === 'rock' ? propSource(g) : { scene: g.scene, box: new THREE.Box3().setFromObject(g.scene) };
-      if (src) PROPS[key] = src;
-    } catch (e) { console.warn('prop load failed', url, e); }
-  }
-  applyProps();
+  // start the character downloads straight away, alongside the animations
+  const files = {};
+  for (const url of Object.values(manifest.characters || {})) files[url] = files[url] || loader.loadAsync(url);
   const sharedClips = [];
-  for (const url of manifest.animations || []) {
+  // all animation files download at the same time
+  await Promise.all((manifest.animations || []).map(async url => {
     // Mixamo names every clip "mixamo.com", so fall back to the file name (models/anim/run.glb -> run)
     try { const g = await loader.loadAsync(url); g.animations.forEach(c => { if (!c.name || c.name === 'mixamo.com') c.name = url.split('/').pop().replace(/\.glb$/i, ''); sharedClips.push(stripRootMotion(c)); }); } catch (e) { console.warn('animation load failed', url, e); }
-  }
-  const files = {};
+  }));
+  sharedClips.sort((a, b) => a.name.localeCompare(b.name));
   for (const [key, url] of Object.entries(manifest.characters || {})) {
     try {
-      const g = await (files[url] = files[url] || loader.loadAsync(url));
+      const g = await files[url];
       g.animations.forEach(c => { if (!c.name || c.name === 'mixamo.com') c.name = 'idle'; });
       g.scene.updateMatrixWorld(true);
       g.scene.traverse(o => { if (o.isSkinnedMesh) { o.skeleton.pose(); o.computeBoundingBox(); } });
@@ -497,6 +494,15 @@ async function loadModels() {
     } catch (e) { console.warn('model load failed', url, e); }
   }
   if (Object.keys(MODEL_CACHE).length) previewSkin();
+  // map props and weapons after the characters, all at once. Phones skip the heavy realistic trees.
+  await Promise.all(Object.entries(manifest.props || {}).filter(([key]) => !(key === 'tree' && IS_TOUCH)).map(async ([key, url]) => {
+    try {
+      const g = await loader.loadAsync(url);
+      const src = key === 'tree' ? multiSource(g) : key === 'rock' ? propSource(g) : { scene: g.scene, box: new THREE.Box3().setFromObject(g.scene) };
+      if (src) PROPS[key] = src;
+    } catch (e) { console.warn('prop load failed', url, e); }
+  }));
+  applyProps();
 }
 class SkinnedModel {
   constructor(key) {
@@ -595,6 +601,9 @@ class View {
     this.setWeapon(p.w);
     this.parts.armor.visible = p.ar > 0;
     if (p.atk !== this.atkSeen) { this.atkSeen = p.atk; this.atkT = 0; sfx('whoosh', this.x, this.z); }
+    if ((p.rolls || 0) !== (this.rollSeen ?? (p.rolls || 0))) { this.rollV = 0; sfx('whoosh', this.x, this.z); }
+    this.rollSeen = p.rolls || 0;
+    this.rollV = (this.rollV ?? 9) + dt;
     if (p.hp < (this.lastHp ?? p.hp)) this.hitT = 0.25;
     this.lastHp = p.hp;
     this.atkT += dt; this.hitT -= dt;
@@ -606,6 +615,7 @@ class View {
       const kk = p.w || 'fist';
       target = this.atkT < W.wind ? POSE[kk + 'W'] : POSE[kk + 'S']; rate = this.atkT < W.wind ? 14 : 30;
     } else if (this.hitT > 0) { target = POSE.hit; rate = 25; }
+    else if (p.blk) { target = POSE.block; rate = 18; }
     else if (p.mv === 2) target = POSE.air;
     for (const key of POSE_KEYS) this.cur[key] = damp(this.cur[key], target[key], rate, dt);
     const moving = p.alive && p.mv === 1;
@@ -614,7 +624,14 @@ class View {
     if (this.model) this.animateModel(p, W, dt); else this.apply();
     const pr = this.parts.rig;
     pr.position.set(this.x, this.y, this.z);
-    pr.rotation.y = this.yaw;
+    pr.rotation.order = 'YXZ'; pr.rotation.y = this.yaw; pr.rotation.x = 0;
+    if (this.rollV < ROLL.time && p.alive) {
+      // forward somersault around the hips
+      const k = this.rollV / ROLL.time, a = k * TAU, hip = 0.8 * this.def.scale;
+      pr.rotation.x = a;
+      pr.position.y += hip - hip * Math.cos(a) - Math.sin(k * Math.PI) * 0.15;
+      pr.position.x -= Math.sin(this.yaw) * hip * Math.sin(a); pr.position.z -= Math.cos(this.yaw) * hip * Math.sin(a);
+    }
     if (this.model) this.attachWeapon(p);
     this.tag.position.set(this.x, this.y + 2.35 * this.def.scale, this.z);
     this.tag.visible = p.alive && !isLocal;
@@ -628,7 +645,9 @@ class View {
       const restart = this.atkT === 0 || this._atkFor !== this.atkSeen;
       this._atkFor = this.atkSeen;
       m.play(clip, { once: true, restart, speed: m.duration(clip) / (W.cd * 0.9), fade: 0.08 });
-    } else if (this.hitT > 0.1) m.play('hit', { once: true, fade: 0.08 });
+    } else if (this.rollV < ROLL.time) m.play('jump', { fade: 0.05, speed: 1.6 });
+    else if (p.blk) m.play('block', { fade: 0.1 });
+    else if (this.hitT > 0.1) m.play('hit', { once: true, fade: 0.08 });
     else if (p.mv === 2) m.play('jump', { fade: 0.2 });
     else if (p.mv === 1) m.play('run', { speed: p.sp ? 1.25 : 0.95 });
     else m.play('idle', { fade: 0.25 });
@@ -756,6 +775,7 @@ function sfx(k, x, z) {
   if (x !== undefined && me()) { const d = Math.hypot(x - me().x, z - me().z); vol = clamp(1 - d / 40, 0, 1); if (vol <= 0.02) return; }
   switch (k) {
     case 'whoosh': noise(0.12, 0.15 * vol, 3200); break;
+    case 'clang': tone(1250, 0.22, 'square', 0.12 * vol, -400); tone(1870, 0.18, 'triangle', 0.1 * vol, -200); noise(0.06, 0.3 * vol, 4000); break;
     case 'hit': noise(0.15, 0.6 * vol, 1500); tone(140, 0.15, 'triangle', 0.3 * vol, -60); break;
     case 'clang': tone(1200, 0.2, 'square', 0.06 * vol, -500); noise(0.08, 0.3 * vol, 6000); break;
     case 'pick': tone(660, 0.08, 'triangle', 0.25); setTimeout(() => tone(990, 0.12, 'triangle', 0.2), 70); break;
@@ -798,10 +818,15 @@ function hostReset(seed) {
   list.forEach((p, i) => {
     const a = (i / list.length) * TAU + lr() * 0.3, rr = 45 + lr() * 25;
     const o = { x: Math.cos(a) * rr, z: Math.sin(a) * rr }; collide(o);
-    Object.assign(p, { x: o.x, z: o.z, y: H(o.x, o.z), vy: 0, yaw: a + Math.PI, pitch: 0, hp: 100, ar: 0, alive: true, slots: ['fist', 'fist'], cur: 0, w: 'fist', atk: 0, cd: 0, mv: 0, sp: 0, kills: 0, place: 0, inp: p.inp || blankInput() });
+    Object.assign(p, { x: o.x, z: o.z, y: H(o.x, o.z), vy: 0, yaw: a + Math.PI, pitch: 0, hp: 100, ar: 0, alive: true, slots: ['fist', 'fist'], cur: 0, w: 'fist', atk: 0, cd: 0, mv: 0, sp: 0, kills: 0, place: 0, st: 100, blk: 0, rollT: 0, rolls: 0, combo: 0, lastAtk: -9, guardT: 0, inp: p.inp || blankInput() });
   });
 }
-function blankInput() { return { mx: 0, mz: 0, yaw: 0, pitch: 0, atk: false, jump: false, pick: false, slot: -1, swap: false, sprint: false }; }
+function blankInput() { return { mx: 0, mz: 0, yaw: 0, pitch: 0, atk: false, jump: false, pick: false, slot: -1, swap: false, sprint: false, block: false, roll: false }; }
+// ---- block / dodge roll / stamina tuning ----
+const ROLL = { time: 0.42, speed: 10.5, cost: 30, iframes: 0.34 };
+const BLOCK = { arc: 1.25, take: 0.25, takeShield: 0.1, cost: 16, arrowTake: 0.2 };
+// is attacker at (ax, az) in front of a blocking player t?
+const facing = (t, ax, az) => Math.abs(angDiff(Math.atan2(ax - t.x, az - t.z), t.yaw)) < BLOCK.arc;
 function addPlayer(name, skin, bot = false) {
   const id = H_.nextId++;
   const p = { id, name, skin: SKINS[skin] ? skin : 'viru', bot, x: 0, y: 0, z: 0, yaw: 0, pitch: 0, hp: 100, ar: 0, alive: true, w: 'fist', slots: ['fist', 'fist'], cur: 0, atk: 0, mv: 0, sp: 0, kills: 0, place: 0, inp: blankInput(), ai: bot ? { t: 0, target: null, wander: Math.random() * TAU } : null };
@@ -829,6 +854,7 @@ function hostStep(dt) {
   S.zone = { x: z.x, z: z.z, r: z.r };
   S.zoneText = z.shrinking ? `Zone closing! ${Math.ceil(z.t)}s` : (z.stage >= 6 ? 'Final circle' : `Zone shrinks in ${Math.ceil(z.t)}s`);
 
+  H_.time = (H_.time || 0) + dt;
   for (const p of S.players.values()) {
     if (!p.alive) continue;
     if (p.bot) botThink(p, dt);
@@ -842,10 +868,13 @@ function hostStep(dt) {
     p.w = p.slots[p.cur];
     // attack
     p.cd -= dt;
-    if (inp.atk && p.cd <= 0) {
+    if (inp.atk && p.cd <= 0 && !p.blk && !(p.rollT > 0)) {
       const W = WEAPONS[p.w];
-      p.cd = W.cd; p.atk++;
-      H_.pending.push({ p, t: W.wind, W, type: p.w });
+      // attacks chained within a short window build a combo; the 3rd hit is a heavy finisher
+      p.combo = H_.time - (p.lastAtk ?? -9) < W.cd + 0.45 ? (p.combo % 3) + 1 : 1;
+      p.lastAtk = H_.time;
+      p.cd = W.cd * (p.combo === 3 ? 1.25 : 1); p.atk++;
+      H_.pending.push({ p, t: W.wind, W, type: p.w, combo: p.combo });
     }
     // pick up
     if (inp.pick) { inp.pick = false; tryPick(p); }
@@ -870,8 +899,18 @@ function hostStep(dt) {
         if (d > h.W.range || Math.abs(t.y - a.y) > 1.8) continue;
         const ang = Math.atan2(dx, dz);
         if (Math.abs(angDiff(ang, a.yaw)) > h.W.arc / 2 + (d < 1 ? 1 : 0)) continue;
-        damage(t, h.W.dmg, a, h.type);
-        const kb = h.type === 'mace' ? 1.4 : 0.5; t.x += dx / (d || 1) * kb; t.z += dz / (d || 1) * kb; collide(t);
+        if (t.rollT > ROLL.time - ROLL.iframes) { H_.events.push(['dodge', r2(t.x), r2(t.y + 1.4), r2(t.z), a.id, t.id]); fxDodge(t.x, t.y + 1.4, t.z, a.id, t.id); hitAny = true; continue; }
+        const fin = h.combo === 3, dmgAmt = h.W.dmg * (fin ? 1.4 : 1);
+        if (t.blk && facing(t, a.x, a.z)) {
+          damage(t, dmgAmt * (t.ar > 0 ? BLOCK.takeShield : BLOCK.take), a, h.type, true);
+          t.st -= BLOCK.cost * (fin ? 2 : 1) * (h.type === 'mace' ? 1.6 : 1);
+          if (t.st <= 0) { t.st = 0; t.blk = 0; t.guardT = 1.2; H_.events.push(['gb', t.id]); }
+          hitAny = true; continue;
+        }
+        damage(t, dmgAmt, a, h.type);
+        if (fin && a.id === S.myId) showCombo();
+        if (fin) H_.events.push(['cb', a.id]);
+        const kb = (h.type === 'mace' ? 1.4 : 0.5) * (fin ? 2.2 : 1); t.x += dx / (d || 1) * kb; t.z += dz / (d || 1) * kb; collide(t);
         hitAny = true;
       }
       if (!hitAny && h.type !== 'fist') H_.events.push(['sw', r2(a.x), r2(a.z)]);
@@ -885,7 +924,13 @@ function hostStep(dt) {
     if (!dead) for (const t of S.players.values()) {
       if (t === ar.owner || !t.alive) continue;
       const dy = ar.y - (t.y + 1.1);
-      if (Math.abs(dy) < 1.0 && Math.hypot(ar.x - t.x, ar.z - t.z) < 0.55) { damage(t, WEAPONS.bow.dmg, ar.owner, 'bow'); dead = true; break; }
+      if (Math.abs(dy) < 1.0 && Math.hypot(ar.x - t.x, ar.z - t.z) < 0.55) {
+        if (t.rollT > ROLL.time - ROLL.iframes) continue;
+        const blocked = t.blk && facing(t, ar.x - ar.vx, ar.z - ar.vz);
+        damage(t, WEAPONS.bow.dmg * (blocked ? BLOCK.arrowTake : 1), ar.owner, 'bow', blocked);
+        if (blocked) t.st -= BLOCK.cost * 0.6;
+        dead = true; break;
+      }
     }
     if (!dead) for (const c of colliders) if (Math.hypot(ar.x - c.x, ar.z - c.z) < c.r && ar.y < H(c.x, c.z) + 3.5) { dead = true; break; }
     if (dead) S.arrows.splice(i, 1);
@@ -905,25 +950,41 @@ function movePlayer(p, inp, dt) {
   const fwdX = Math.sin(p.yaw), fwdZ = Math.cos(p.yaw), rX = -Math.cos(p.yaw), rZ = Math.sin(p.yaw);
   let mx = fwdX * inp.mz + rX * inp.mx, mz = fwdZ * inp.mz + rZ * inp.mx;
   const l = Math.hypot(mx, mz);
-  const sprint = inp.sprint && inp.mz > 0;
-  const W = WEAPONS[p.w || 'fist'];
-  const spd = (sprint ? 6.6 : 4.4) * (p.cd > W.cd * 0.4 ? 0.55 : 1);
   if (l > 0) { mx /= l; mz /= l; }
-  p.x += mx * spd * dt; p.z += mz * spd * dt;
+  // stamina comes back slowly while blocking, fast otherwise
+  p.st = Math.min(100, (p.st ?? 100) + dt * (p.blk ? 6 : 24));
+  p.guardT = Math.max(0, (p.guardT || 0) - dt);
+  const grounded = p.y <= H(p.x, p.z) + 0.05;
+  if (inp.roll && !(p.rollT > 0) && p.st >= ROLL.cost && grounded) {
+    p.rollT = ROLL.time; p.st -= ROLL.cost; p.rolls = (p.rolls || 0) + 1;
+    if (l > 0) { p.rdx = mx; p.rdz = mz; } else { p.rdx = fwdX; p.rdz = fwdZ; }
+  }
+  inp.roll = false;
+  p.blk = inp.block && !(p.rollT > 0) && p.st > 4 && !(p.guardT > 0) ? 1 : 0;
+  const sprint = inp.sprint && inp.mz > 0 && !p.blk;
+  const W = WEAPONS[p.w || 'fist'];
+  if (p.rollT > 0) {
+    p.rollT -= dt;
+    const k = ROLL.speed * (0.5 + 0.5 * Math.min(1, p.rollT / ROLL.time * 2));
+    p.x += p.rdx * k * dt; p.z += p.rdz * k * dt;
+  } else {
+    const spd = (sprint ? 6.6 : 4.4) * (p.cd > W.cd * 0.4 ? 0.55 : 1) * (p.blk ? 0.45 : 1);
+    p.x += mx * spd * dt; p.z += mz * spd * dt;
+  }
   collide(p);
   const gy = H(p.x, p.z);
   if (p.y <= gy + 0.05) { p.y = gy; p.vy = 0; if (inp.jump) { p.vy = 7.5; p.y += 0.06; } }
   else { p.vy -= 22 * dt; p.y += p.vy * dt; if (p.y < gy) { p.y = gy; p.vy = 0; } }
   inp.jump = false;
-  p.mv = p.y > gy + 0.1 ? 2 : (l > 0 ? 1 : 0);
+  p.mv = p.y > gy + 0.1 ? 2 : (l > 0 || p.rollT > 0 ? 1 : 0);
   p.sp = sprint ? 1 : 0;
 }
-function damage(t, amt, src, how) {
+function damage(t, amt, src, how, blocked) {
   if (!t.alive || amt <= 0) return;
   const total = amt; let ab = 0;
   if (t.ar > 0 && how !== 'zone') { ab = Math.min(t.ar, amt * 0.6); t.ar -= ab; amt -= ab; }
   t.hp -= amt;
-  if (how !== 'zone') { const n = Math.round(total), arm = ab > amt ? 1 : 0; H_.events.push(['hit', r2(t.x), r2(t.y + 1.2), r2(t.z), src ? src.id : 0, t.id, n, arm]); fxHit(t.x, t.y + 1.2, t.z, src ? src.id : 0, t.id, n, arm); }
+  if (how !== 'zone') { const n = Math.round(total), arm = blocked ? 2 : ab > amt ? 1 : 0; H_.events.push(['hit', r2(t.x), r2(t.y + 1.2), r2(t.z), src ? src.id : 0, t.id, n, arm]); fxHit(t.x, t.y + 1.2, t.z, src ? src.id : 0, t.id, n, arm); }
   if (t.hp <= 0) {
     t.hp = 0; t.alive = false;
     t.place = [...S.players.values()].filter(p => p.alive).length + 1;
@@ -997,6 +1058,13 @@ function botThink(p, dt) {
     else inp.atk = aligned && d < W.range + 0.2;
   }
   if (ai.loot && d < 1.8) inp.pick = true;
+  // defend: raise guard when the target is swinging nearby, roll away when hurt
+  ai.blkT = (ai.blkT || 0) - dt;
+  const tg = ai.target;
+  if (tg && !W.ranged && d < 4 && tg.cd > 0.1 && ai.blkT <= -0.6 && Math.random() < 0.35) ai.blkT = 0.5 + Math.random() * 0.4;
+  inp.block = ai.blkT > 0 && p.st > 20;
+  if (inp.block) inp.atk = false;
+  if (tg && d < 3.5 && p.hp < 45 && p.st > 50 && Math.random() < dt * 1.2) { inp.roll = true; inp.mx = Math.random() < 0.5 ? -1 : 1; inp.mz = -0.5; }
   // stuck detection
   ai.lx = ai.lx ?? p.x; ai.lz = ai.lz ?? p.z; ai.st = (ai.st || 0) + dt;
   if (ai.st > 1.2) { if (Math.hypot(p.x - ai.lx, p.z - ai.lz) < 0.5 && inp.mz !== 0) { ai.wander = Math.random() * TAU; inp.jump = true; ai.target = null; ai.loot = null; ai.t = 1.2; } ai.st = 0; ai.lx = p.x; ai.lz = p.z; }
@@ -1046,7 +1114,7 @@ function onHostMsg(conn, m) {
     const p = S.players.get(conn.playerId); if (!p) return;
     const i = p.inp;
     i.mx = clamp(+m.mx || 0, -1, 1); i.mz = clamp(+m.mz || 0, -1, 1); i.yaw = +m.yaw || 0; i.pitch = clamp(+m.pitch || 0, -1.2, 1.2);
-    i.atk = !!m.atk; i.sprint = !!m.sp;
+    i.atk = !!m.atk; i.sprint = !!m.sp; i.block = !!m.bk; if (m.rl) i.roll = true;
     if (m.j) i.jump = true; if (m.pk) i.pick = true; if (m.sw) i.swap = true; if (m.sl >= 0 && m.sl <= 1) i.slot = m.sl;
     // trust the client's predicted position a little (smooth feel), but never beyond what it could reach
     if (typeof m.x === 'number' && p.alive) { const d = Math.hypot(m.x - p.x, m.z - p.z); if (d < 1.2) { p.x = m.x; p.z = m.z; collide(p); } }
@@ -1085,12 +1153,13 @@ let lastSnap = 0;
 function applySnapshot(m) {
   const seen = new Set();
   for (const a of m.p) {
-    const [id, x, y, z, yaw, hp, ar, alive, w, atk, mv, sp, kills, place, name, skin, slots, cur] = a;
+    const [id, x, y, z, yaw, hp, ar, alive, w, atk, mv, sp, kills, place, name, skin, slots, cur, blk, rolls, st] = a;
     seen.add(id);
     let p = S.players.get(id);
     if (!p) { p = { id }; S.players.set(id, p); }
     const local = id === S.myId;
     Object.assign(p, { hp, ar, alive: !!alive, w, atk, kills, place, name, skin, slots, cur });
+    if (!local) Object.assign(p, { blk, rolls }); else p.stHost = st;
     if (local && p.alive && p.x !== undefined) {
       // client-side prediction: keep our own position unless far off
       if (Math.hypot(p.x - x, p.z - z) > 2.5) { p.x = x; p.z = z; p.y = y; }
@@ -1106,12 +1175,15 @@ function handleEvent(e) {
   else if (e[0] === 'kill') fxKill(e[1], e[2], e[3], e[4]);
   else if (e[0] === 'end') onEnd(e[1], e[2]);
   else if (e[0] === 'sw') {}
+  else if (e[0] === 'dodge') fxDodge(e[1], e[2], e[3], e[4], e[5]);
+  else if (e[0] === 'cb' && e[1] === S.myId) showCombo();
+  else if (e[0] === 'gb' && e[1] === S.myId) centerMsg('GUARD BROKEN', '', 0.9);
   else if (e[0] === 'pick' && e[1] === S.myId) sfx(e[2] === 'herb' || e[2] === 'armor' ? 'heal' : 'pick');
 }
 function makeSnapshot() {
   return {
     t: 's',
-    p: [...S.players.values()].map(p => [p.id, r2(p.x), r2(p.y), r2(p.z), r2(p.yaw), Math.ceil(p.hp), Math.ceil(p.ar), p.alive ? 1 : 0, p.w, p.atk, p.mv, p.sp, p.kills, p.place, p.name, p.skin, p.slots, p.cur]),
+    p: [...S.players.values()].map(p => [p.id, r2(p.x), r2(p.y), r2(p.z), r2(p.yaw), Math.ceil(p.hp), Math.ceil(p.ar), p.alive ? 1 : 0, p.w, p.atk, p.mv, p.sp, p.kills, p.place, p.name, p.skin, p.slots, p.cur, p.blk ? 1 : 0, p.rolls || 0, Math.round(p.st ?? 100)]),
     a: S.arrows.map(a => [r2(a.x), r2(a.y), r2(a.z), r2(a.vx), r2(a.vy), r2(a.vz)]),
     z: [r2(S.zone.x), r2(S.zone.z), r2(S.zone.r)], zt: S.zoneText, al: S.alive,
     e: H_.events.splice(0),
@@ -1193,7 +1265,19 @@ function updateDmgNumbers(dt) {
     d.el.style.opacity = d.t > 0.6 ? (0.9 - d.t) / 0.3 : 1;
   }
 }
+function fxDodge(x, y, z, srcId, tId) {
+  sparks(x, y, z, 0xbfe0ff, 10);
+  if (srcId === S.myId || tId === S.myId) dmgNumber(x, y, z, 'DODGE', 'dodge');
+}
+function showCombo() {
+  const el = $('combo'); el.classList.remove('go'); void el.offsetWidth; el.classList.add('go');
+}
 function fxHit(x, y, z, srcId, tId, n, arm) {
+  if (arm === 2) {
+    sparks(x, y, z, 0xffffff, 18); sparks(x, y, z, 0x9fd0ff, 10); sfx('clang', x, z);
+    if (srcId === S.myId || tId === S.myId) dmgNumber(x, y, z, 'BLOCK ' + n, 'blk');
+    return;
+  }
   sparks(x, y, z, 0xffb060, 16); sparks(x, y, z, 0xc8321c, 8);
   if (n && srcId === S.myId && tId !== S.myId) dmgNumber(x, y, z, n, arm ? 'arm' : n >= 30 ? 'big' : '');
   else if (n && tId === S.myId) dmgNumber(x, y, z, '-' + n, 'me');
@@ -1272,7 +1356,8 @@ $('bCopy').onclick = () => {
 // ====================== INPUT ======================
 const keys = {};
 let camYaw = 0, camPitch = 0.25, mouseDown = false, locked = false;
-const edge = { jump: false, pick: false, swap: false, slot: -1 };
+const edge = { jump: false, pick: false, swap: false, roll: false, slot: -1 };
+let rightDown = false;
 addEventListener('keydown', e => {
   if (e.target.tagName === 'INPUT') return;
   keys[e.code] = true;
@@ -1283,16 +1368,18 @@ addEventListener('keydown', e => {
   if (e.code === 'Digit1') edge.slot = 0;
   if (e.code === 'Digit2') edge.slot = 1;
   if (e.code === 'KeyF') mouseDown = true;
+  if (e.code === 'KeyC' || e.code === 'AltLeft') { edge.roll = true; e.preventDefault(); }
 });
 addEventListener('keyup', e => { keys[e.code] = false; if (e.code === 'KeyF') mouseDown = false; });
-addEventListener('blur', () => { for (const k in keys) keys[k] = false; mouseDown = false; });
+addEventListener('blur', () => { for (const k in keys) keys[k] = false; mouseDown = false; rightDown = false; });
 function requestLock() { if (!matchMedia('(pointer:fine)').matches) return; try { canvas.requestPointerLock()?.catch?.(() => {}); } catch (e) {} }
 canvas.addEventListener('mousedown', e => {
   if (S.phase !== 'play') return;
   if (!locked) { requestLock(); return; }
   if (e.button === 0) mouseDown = true;
+  if (e.button === 2) rightDown = true;
 });
-addEventListener('mouseup', e => { if (e.button === 0) mouseDown = false; });
+addEventListener('mouseup', e => { if (e.button === 0) mouseDown = false; if (e.button === 2) rightDown = false; });
 document.addEventListener('pointerlockchange', () => { locked = document.pointerLockElement === canvas; $('clickHint').style.display = locked ? 'none' : ''; });
 addEventListener('mousemove', e => {
   if (!locked) return;
@@ -1305,7 +1392,7 @@ canvas.addEventListener('contextmenu', e => e.preventDefault());
 
 // ---------- touch controls (phones / tablets) ----------
 // Left thumb: virtual joystick. Right thumb: drag anywhere to look. Buttons: attack, jump, pick up, swap, sprint.
-const touch = { jx: 0, jz: 0, joyId: null, lookId: null, lx: 0, ly: 0, atk: false, sprint: false };
+const touch = { jx: 0, jz: 0, joyId: null, lookId: null, lx: 0, ly: 0, atk: false, sprint: false, block: false };
 function setupTouch() {
   const joy = $('joy'), knob = $('joyKnob'), look = $('lookZone');
   const R = 55;
@@ -1347,6 +1434,8 @@ function setupTouch() {
   hold('tJump', () => { edge.jump = true; });
   hold('tPick', () => { edge.pick = true; });
   hold('tSwap', () => { edge.swap = true; });
+  hold('tBlock', () => { touch.block = true; }, () => { touch.block = false; });
+  hold('tRoll', () => { edge.roll = true; });
   hold('tRun', () => { touch.sprint = !touch.sprint; $('tRun').classList.toggle('lit', touch.sprint); });
   $('tFull').addEventListener('click', () => {
     const d = document.documentElement;
@@ -1364,6 +1453,7 @@ function gatherInput() {
     mz: clamp((keys.KeyW ? 1 : 0) - (keys.KeyS ? 1 : 0) + (tmag > 0.2 ? touch.jz : 0), -1, 1),
     yaw: camYaw, pitch: camPitch - 0.25, atk: mouseDown || touch.atk || performance.now() < (touch.atkUntil || 0),
     sprint: !!(keys.ShiftLeft || keys.ShiftRight) || touch.sprint || tmag > 0.95,
+    block: rightDown || !!keys.KeyX || touch.block,
   };
 }
 
@@ -1404,6 +1494,11 @@ function drawHUD() {
   const p = me(); if (!p) return;
   $('hpf').style.width = p.hp + '%'; $('hpT').textContent = Math.ceil(p.hp);
   $('hptr').style.width = p.hp + '%';
+  const st = isHost ? p.st ?? 100 : p.st ?? p.stHost ?? 100;
+  $('stf').style.width = st + '%';
+  $('abRoll').classList.toggle('off', st < ROLL.cost || p.rollT > 0);
+  $('abBlock').classList.toggle('on', !!p.blk); $('abBlock').classList.toggle('off', (p.guardT || 0) > 0 || st <= 4);
+  $('abCombo').textContent = p.combo > 1 && H_.time - (p.lastAtk ?? -9) < 1 ? 'x' + p.combo : '';
   document.body.classList.toggle('lowhp', p.alive && p.hp < 30);
   $('arf').style.width = p.ar + '%'; $('arT').textContent = Math.ceil(p.ar);
   $('aliveN').textContent = S.alive || [...S.players.values()].filter(q => q.alive).length;
@@ -1464,6 +1559,7 @@ function frame() {
     if (isHost) {
       if (p) {
         Object.assign(p.inp, inp);
+        if (edge.roll) p.inp.roll = true;
         if (edge.jump) p.inp.jump = true; if (edge.pick) p.inp.pick = true; if (edge.swap) p.inp.swap = true; if (edge.slot >= 0) p.inp.slot = edge.slot;
       }
       hostStep(dt);
@@ -1479,17 +1575,17 @@ function frame() {
       // client prediction of own movement
       if (p.alive) {
         p.yaw = inp.yaw;
-        const pi = { ...inp, jump: edge.jump };
+        const pi = { ...inp, jump: edge.jump, roll: edge.roll };
         p.vy = p.vy || 0;
         movePlayer(p, pi, dt);
       }
       inT -= dt;
-      if (inT <= 0 || edge.jump || edge.pick || edge.swap || edge.slot >= 0) {
+      if (inT <= 0 || edge.jump || edge.pick || edge.swap || edge.roll || edge.slot >= 0) {
         inT = 1 / 30;
-        NET.host.open && NET.host.send({ t: 'in', ...inp, sp: inp.sprint, j: edge.jump, pk: edge.pick, sw: edge.swap, sl: edge.slot, x: r2(p.x), z: r2(p.z) });
+        NET.host.open && NET.host.send({ t: 'in', ...inp, sp: inp.sprint, bk: inp.block, rl: edge.roll, j: edge.jump, pk: edge.pick, sw: edge.swap, sl: edge.slot, x: r2(p.x), z: r2(p.z) });
       }
     }
-    edge.jump = edge.pick = edge.swap = false; edge.slot = -1;
+    edge.jump = edge.pick = edge.swap = edge.roll = false; edge.slot = -1;
 
     // views
     const seen = new Set();
