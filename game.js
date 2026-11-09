@@ -1089,7 +1089,15 @@ function hostRoom() {
   S.myId = meP.id;
   S.phase = 'lobby';
   peer.on('open', () => { $('roomCode').textContent = code; showScreen('lobby'); renderLobby(); });
-  peer.on('error', e => { if (e.type === 'unavailable-id') { peer.destroy(); hostRoom(); } else { showErr('Network error: ' + e.type); $('lobbyErr').textContent = 'Network: ' + e.type; } });
+  peer.on('error', e => { if (e.type === 'unavailable-id') { peer.destroy(); hostRoom(); } else if (e.type !== 'network' && e.type !== 'disconnected') { showErr('Network error: ' + e.type); $('lobbyErr').textContent = 'Network: ' + e.type; } });
+  // Phones drop the connection to the room server when the browser goes to the background
+  // (e.g. while sharing the code on WhatsApp). Friends then get "room not found", so reconnect.
+  peer.on('disconnected', () => {
+    if (NET.peer !== peer || peer.destroyed) return;
+    $('lobbyErr').textContent = 'Reconnecting…';
+    setTimeout(() => { if (NET.peer === peer && !peer.destroyed && peer.disconnected) try { peer.reconnect(); } catch (e) {} }, 800);
+  });
+  peer.on('open', () => { if ($('lobbyErr').textContent === 'Reconnecting…') $('lobbyErr').textContent = ''; });
   peer.on('connection', conn => {
     conn.on('data', msg => onHostMsg(conn, msg));
     conn.on('close', () => {
@@ -1099,8 +1107,12 @@ function hostRoom() {
       renderLobby(); broadcastLobby();
     });
   });
-  $('bStart').disabled = false; $('lobbyNote').textContent = 'Bots fill the island up to 12 warriors.';
+  $('bStart').disabled = false; $('lobbyNote').textContent = 'Bots fill the island up to 12 warriors. Keep this page open while friends join.';
 }
+document.addEventListener('visibilitychange', () => {
+  const peer = NET.peer;
+  if (document.visibilityState === 'visible' && isHost && peer && !peer.destroyed && peer.disconnected) try { peer.reconnect(); } catch (e) {}
+});
 function onHostMsg(conn, m) {
   if (!m || typeof m !== 'object') return;
   if (m.t === 'join') {
@@ -1123,23 +1135,37 @@ function onHostMsg(conn, m) {
 function broadcast(msg) { for (const c of NET.conns.values()) if (c.open) c.send(msg); }
 function broadcastLobby() { broadcast({ t: 'lobby', players: [...S.players.values()].map(p => [p.id, p.name, p.skin]) }); }
 
-function joinRoom(code) {
+function joinRoom(code, attempt = 1) {
   if (!netAvailable()) return showErr('Online library failed to load. Check your internet connection.');
-  code = code.toUpperCase().trim();
+  // keep only letters and digits, so "abc d2", "ABCD2 " and a pasted invite link all work
+  code = String(code).toUpperCase().replace(/.*ROOM=/, '').replace(/[^A-Z0-9]/g, '').slice(0, 5);
   if (code.length !== 5) return showErr('Enter the 5-letter room code.');
+  if (NET.peer && attempt === 1) { try { NET.peer.destroy(); } catch (e) {} NET.peer = null; }
   isHost = false;
-  showErr('Connecting…');
-  const peer = new window.Peer();
+  showErr(attempt > 1 ? `Looking for room ${code}… (${attempt}/3)` : 'Connecting…');
+  const peer = NET.peer && !NET.peer.destroyed ? NET.peer : new window.Peer();
   NET.peer = peer;
-  peer.on('open', () => {
+  let done = false;
+  const retry = () => {
+    if (done || NET.peer !== peer || S.phase !== 'menu') return;
+    done = true;
+    if (attempt < 3) setTimeout(() => joinRoom(code, attempt + 1), 2000);
+    else showErr(`Room ${code} not found. Check the code, and ask the host to keep the game open on their screen.`);
+  };
+  NET.joinRetry = retry;
+  const go = () => {
     const conn = peer.connect(PREFIX + code, { reliable: true });
     NET.host = conn;
-    const to = setTimeout(() => showErr('Could not reach that room. Check the code.'), 9000);
-    conn.on('open', () => { clearTimeout(to); conn.send({ t: 'join', name: myName(), skin: mySkin }); });
+    const to = setTimeout(retry, 9000);
+    conn.on('open', () => { clearTimeout(to); done = true; conn.send({ t: 'join', name: myName(), skin: mySkin }); });
     conn.on('data', m => onClientMsg(m));
     conn.on('close', () => { if (S.phase !== 'menu') { centerMsg('Host left the match', 'Returning to menu…'); setTimeout(toMenu, 2500); } });
+  };
+  if (peer.open) go(); else peer.on('open', go);
+  if (attempt === 1) peer.on('error', e => {
+    if (e.type === 'peer-unavailable') NET.joinRetry && NET.joinRetry();
+    else if (e.type !== 'network' && e.type !== 'disconnected') showErr('Network error: ' + e.type);
   });
-  peer.on('error', e => showErr(e.type === 'peer-unavailable' ? 'Room not found. Check the code.' : 'Network error: ' + e.type));
 }
 function onClientMsg(m) {
   if (m.t === 'full') { showErr('That room is full or already playing.'); return; }
